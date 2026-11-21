@@ -1,6 +1,6 @@
 //! G-code generation for GRBL laser controllers (vector cutting + raster engraving).
 
-use crate::geometry::Vec2;
+use crate::geometry::{Affine, Vec2};
 use crate::model::{CutMode, Document, MachineSettings, ObjectKind, Origin};
 
 /// Result of a generation pass.
@@ -35,6 +35,19 @@ pub struct GenOptions {
     /// When `Some(anchor)`, output is shifted so this document-space point maps
     /// to machine (0,0) — "start from job origin" / relative coordinates.
     pub relative_anchor: Option<Vec2>,
+    /// When `Some(t)`, every document-space point is transformed by `t` before
+    /// mapping to the machine — the print-and-cut registration alignment.
+    pub align_transform: Option<Affine>,
+}
+
+/// Map a machine-space point back to document space (inverse of [`to_machine`]
+/// with no offset). Used to turn jogged/measured machine coordinates into the
+/// document frame for registration fitting.
+pub fn machine_to_doc(p: Vec2, m: &MachineSettings) -> Vec2 {
+    match m.origin {
+        Origin::FrontLeft => Vec2::new(p.x, m.bed_h_mm - p.y),
+        Origin::TopLeft => p,
+    }
 }
 
 fn fmt(v: f64) -> String {
@@ -63,8 +76,13 @@ pub fn generate_with(doc: &Document, opts: &GenOptions) -> GcodeJob {
     let mut stats = GcodeStats::default();
 
     // Machine-space offset for a relative job origin.
+    // Optional print-and-cut alignment, applied to each document point first.
+    let align = |p: Vec2| match opts.align_transform {
+        Some(t) => t.apply(p),
+        None => p,
+    };
     let off = match opts.relative_anchor {
-        Some(a) => to_machine(a, m, Vec2::new(0.0, 0.0)),
+        Some(a) => to_machine(align(a), m, Vec2::new(0.0, 0.0)),
         None => Vec2::new(0.0, 0.0),
     };
     let included = |o: &crate::model::Object| match &opts.only_ids {
@@ -113,7 +131,7 @@ pub fn generate_with(doc: &Document, opts: &GenOptions) -> GcodeJob {
                         let mp = pl
                             .points
                             .iter()
-                            .map(|p| to_machine(mat.apply(*p), m, off))
+                            .map(|p| to_machine(align(mat.apply(*p)), m, off))
                             .collect::<Vec<_>>();
                         paths.push((mp, pl.closed));
                     }
@@ -121,7 +139,7 @@ pub fn generate_with(doc: &Document, opts: &GenOptions) -> GcodeJob {
                     stats.objects_out += 1;
                 }
                 (ObjectKind::Image(_), CutMode::Image) => {
-                    emit_raster(&mut out, doc, obj, layer, off);
+                    emit_raster(&mut out, doc, obj, layer, off, opts.align_transform);
                     emitted = true;
                     stats.objects_out += 1;
                 }
@@ -233,6 +251,7 @@ fn emit_raster(
     obj: &crate::model::Object,
     layer: &crate::model::Layer,
     off: Vec2,
+    align: Option<Affine>,
 ) {
     let m = &doc.machine;
     let s = &layer.settings;
@@ -265,7 +284,14 @@ fn emit_raster(
 
     // local-space helper: cell (rx, ry) -> local mm, then to machine.
     let mat = obj.matrix();
-    let local = |x_mm: f64, y_mm: f64| to_machine(mat.apply(Vec2::new(x_mm, y_mm)), m, off);
+    let local = |x_mm: f64, y_mm: f64| {
+        let doc_p = mat.apply(Vec2::new(x_mm, y_mm));
+        let doc_p = match align {
+            Some(t) => t.apply(doc_p),
+            None => doc_p,
+        };
+        to_machine(doc_p, m, off)
+    };
 
     for ry in 0..rows {
         let y_mm = (ry as f64 + 0.5) * interval;

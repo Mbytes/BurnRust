@@ -81,6 +81,51 @@ fn solve8(a: &mut [[f64; 8]; 8], b: &mut [f64; 8]) -> Option<[f64; 8]> {
     Some(x)
 }
 
+/// Correct radial lens distortion on an RGBA image (barrel / pincushion).
+///
+/// `k1`/`k2` are the radial coefficients with radius normalised to the image's
+/// half-diagonal, so values are roughly in `-0.5..0.5`. Positive pushes samples
+/// outward (undoes pincushion), negative pulls inward (undoes barrel). Returns a
+/// new image of the same size; areas with no source sample stay transparent.
+pub fn undistort(src: &[u8], w: usize, h: usize, k1: f64, k2: f64) -> Vec<u8> {
+    let mut out = vec![0u8; w * h * 4];
+    if w == 0 || h == 0 || src.len() < w * h * 4 {
+        return out;
+    }
+    let cx = w as f64 / 2.0;
+    let cy = h as f64 / 2.0;
+    let norm = (cx * cx + cy * cy).sqrt().max(1.0);
+    for oy in 0..h {
+        for ox in 0..w {
+            let nx = (ox as f64 - cx) / norm;
+            let ny = (oy as f64 - cy) / norm;
+            let r2 = nx * nx + ny * ny;
+            let factor = 1.0 + k1 * r2 + k2 * r2 * r2;
+            let fx = cx + nx * factor * norm - 0.5;
+            let fy = cy + ny * factor * norm - 0.5;
+            if fx < 0.0 || fy < 0.0 || fx >= (w - 1) as f64 || fy >= (h - 1) as f64 {
+                continue;
+            }
+            let x0 = fx.floor() as usize;
+            let y0 = fy.floor() as usize;
+            let tx = fx - x0 as f64;
+            let ty = fy - y0 as f64;
+            let o = (oy * w + ox) * 4;
+            for ch in 0..4 {
+                let p00 = src[(y0 * w + x0) * 4 + ch] as f64;
+                let p10 = src[(y0 * w + x0 + 1) * 4 + ch] as f64;
+                let p01 = src[((y0 + 1) * w + x0) * 4 + ch] as f64;
+                let p11 = src[((y0 + 1) * w + x0 + 1) * 4 + ch] as f64;
+                let top = p00 + (p10 - p00) * tx;
+                let bot = p01 + (p11 - p01) * tx;
+                out[o + ch] = (top + (bot - top) * ty).round().clamp(0.0, 255.0) as u8;
+            }
+            out[o + 3] = 255;
+        }
+    }
+    out
+}
+
 /// Warp a source RGBA image into a bed-aligned RGBA image.
 ///
 /// `h_bed_to_src` maps bed-mm coordinates to source-image pixels. The output image

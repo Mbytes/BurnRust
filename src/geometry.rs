@@ -184,6 +184,98 @@ impl Affine {
     }
 }
 
+/// Fit an affine transform mapping `src` points onto `dst` points.
+///
+/// With exactly 2 pairs it returns a similarity (translation + rotation + uniform
+/// scale, no shear). With 3 or more pairs it returns the least-squares full affine.
+/// Used for print-and-cut registration: map the designed mark positions to the
+/// measured positions of the printed marks on the bed.
+pub fn fit_affine(src: &[Vec2], dst: &[Vec2]) -> Option<Affine> {
+    let n = src.len();
+    if n < 2 || n != dst.len() {
+        return None;
+    }
+    if n == 2 {
+        let (s0, s1) = (src[0], src[1]);
+        let (d0, d1) = (dst[0], dst[1]);
+        let sv = Vec2::new(s1.x - s0.x, s1.y - s0.y);
+        let dv = Vec2::new(d1.x - d0.x, d1.y - d0.y);
+        let slen2 = sv.x * sv.x + sv.y * sv.y;
+        if slen2 < 1e-12 {
+            return None;
+        }
+        // Complex division dv / sv gives rotation+scale (a + i·b).
+        let a = (dv.x * sv.x + dv.y * sv.y) / slen2;
+        let b = (dv.y * sv.x - dv.x * sv.y) / slen2;
+        let e = d0.x - (a * s0.x - b * s0.y);
+        let f = d0.y - (b * s0.x + a * s0.y);
+        return Some(Affine {
+            a,
+            b,
+            c: -b,
+            d: a,
+            e,
+            f,
+        });
+    }
+    // Least-squares full affine via 3×3 normal equations (solved twice).
+    let mut s = [[0.0f64; 3]; 3];
+    let mut rx = [0.0f64; 3];
+    let mut ry = [0.0f64; 3];
+    for i in 0..n {
+        let row = [src[i].x, src[i].y, 1.0];
+        for r in 0..3 {
+            for c in 0..3 {
+                s[r][c] += row[r] * row[c];
+            }
+            rx[r] += row[r] * dst[i].x;
+            ry[r] += row[r] * dst[i].y;
+        }
+    }
+    let ace = solve3(&s, &rx)?;
+    let bdf = solve3(&s, &ry)?;
+    Some(Affine {
+        a: ace[0],
+        c: ace[1],
+        e: ace[2],
+        b: bdf[0],
+        d: bdf[1],
+        f: bdf[2],
+    })
+}
+
+/// Solve a 3×3 linear system `m·x = r` by Gaussian elimination with partial pivot.
+fn solve3(m: &[[f64; 3]; 3], r: &[f64; 3]) -> Option<[f64; 3]> {
+    let mut a = *m;
+    let mut b = *r;
+    for col in 0..3 {
+        let mut piv = col;
+        let mut best = a[col][col].abs();
+        for row in (col + 1)..3 {
+            if a[row][col].abs() > best {
+                best = a[row][col].abs();
+                piv = row;
+            }
+        }
+        if best < 1e-12 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        for row in 0..3 {
+            if row == col {
+                continue;
+            }
+            let fac = a[row][col] / a[col][col];
+            for c in col..3 {
+                a[row][c] -= fac * a[col][c];
+            }
+            b[row] -= fac * b[col];
+        }
+    }
+    Some([b[0] / a[0][0], b[1] / a[1][1], b[2] / a[2][2]])
+}
+
 /// Flatten a quadratic Bézier into line points (excluding the start point).
 pub fn flatten_quad(p0: Vec2, p1: Vec2, p2: Vec2, tol: f64, out: &mut Vec<Vec2>) {
     let steps = quad_steps(p0, p1, p2, tol);

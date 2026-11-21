@@ -340,6 +340,7 @@ pub fn run() {
             &GenOptions {
                 only_ids: Some(vec![cut_id]),
                 relative_anchor: None,
+                ..Default::default()
             },
         );
         assert_eq!(only.stats.objects_out, 1, "el filtro no dejó 1 objeto");
@@ -357,6 +358,7 @@ pub fn run() {
             &GenOptions {
                 only_ids: None,
                 relative_anchor: Some(Vec2::new(20.0, 20.0)),
+                ..Default::default()
             },
         );
         assert_eq!(abs.stats.objects_out, rel.stats.objects_out);
@@ -368,6 +370,101 @@ pub fn run() {
             "Opciones de salida: filtro 1/{} obj · origen relativo desplaza coords OK",
             doc3.objects.len()
         );
+    }
+
+    // Bitmap tracing (vectorize): a dark block becomes a closed contour.
+    {
+        let (tw, th) = (12usize, 12usize);
+        let mut g = vec![255u8; tw * th];
+        for y in 3..9 {
+            for x in 3..9 {
+                g[y * tw + x] = 0;
+            }
+        }
+        let pls = crate::trace::trace_bitmap(&g, tw, th, 128, false, 24.0, 24.0, 0.0);
+        assert!(!pls.is_empty(), "el trazado no produjo contornos");
+        assert!(pls.iter().all(|p| p.closed), "los contornos deben ser cerrados");
+        // The block spans pixels 3..9 → ~half the 24 mm footprint. Bounds sane.
+        let bb = crate::geometry::BBox::from_points(pls.iter().flat_map(|p| p.points.iter()))
+            .expect("bbox del trazo");
+        assert!(bb.width() > 6.0 && bb.width() < 20.0, "ancho del trazo fuera de rango");
+        // Empty image (all white) → nothing to trace.
+        let empty = crate::trace::trace_bitmap(&vec![255u8; tw * th], tw, th, 128, false, 24.0, 24.0, 0.0);
+        assert!(empty.is_empty(), "una imagen en blanco no debe trazar nada");
+        println!(
+            "Vectorizar: {} contorno(s), bbox {:.1}×{:.1} mm",
+            pls.len(),
+            bb.width(),
+            bb.height()
+        );
+    }
+
+    // Affine fit for print&cut registration: recover a known transform.
+    {
+        use crate::geometry::{fit_affine, Affine, Vec2};
+        let t = Affine::trs(15.0, -8.0, 12.0, 1.03, 1.03); // translate+rotate+scale
+        let src = [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(50.0, 0.0),
+            Vec2::new(50.0, 40.0),
+            Vec2::new(0.0, 40.0),
+        ];
+        let dst: Vec<Vec2> = src.iter().map(|p| t.apply(*p)).collect();
+        let fitted = fit_affine(&src, &dst).expect("ajuste afín");
+        let mut err = 0.0f64;
+        for (s, d) in src.iter().zip(&dst) {
+            let r = fitted.apply(*s);
+            err = err.max((r.x - d.x).abs().max((r.y - d.y).abs()));
+        }
+        assert!(err < 1e-6, "el ajuste afín no reprodujo la transformación: {err:e}");
+        // Two-point similarity is also recoverable.
+        let sim = fit_affine(&src[..2], &dst[..2]).expect("similitud");
+        let r0 = sim.apply(src[0]);
+        let r1 = sim.apply(src[1]);
+        assert!((r0.x - dst[0].x).abs() < 1e-6 && (r1.x - dst[1].x).abs() < 1e-6);
+        println!("Print&Cut: ajuste afín (4 pts) y similitud (2 pts) OK, err={err:.1e}");
+    }
+
+    // Registration alignment changes the generated cut coordinates.
+    {
+        use crate::gcode::{generate_with, GenOptions};
+        use crate::geometry::Affine;
+        let doc3 = demo_document();
+        let shifted = generate_with(
+            &doc3,
+            &GenOptions {
+                align_transform: Some(Affine::translate(10.0, 5.0)),
+                ..Default::default()
+            },
+        );
+        let base = generate_with(&doc3, &GenOptions::default());
+        assert_ne!(base.lines, shifted.lines, "la alineación no cambió el G-code");
+        println!("Print&Cut: la alineación desplaza las coordenadas de corte OK");
+    }
+
+    // Lens undistortion keeps image size and samples the interior.
+    {
+        let (uw, uh) = (16usize, 12usize);
+        let img = vec![180u8; uw * uh * 4];
+        let out = crate::homography::undistort(&img, uw, uh, -0.2, 0.05);
+        assert_eq!(out.len(), uw * uh * 4, "la corrección cambió el tamaño");
+        let opaque = out.chunks(4).filter(|p| p[3] == 255).count();
+        assert!(opaque > uw * uh / 2, "la corrección dejó casi todo transparente");
+        println!("Distorsión de lente: {}/{} píxeles muestreados", opaque, uw * uh);
+    }
+
+    // Catmull-Rom smoothing densifies a polyline through its nodes.
+    {
+        use crate::geometry::Vec2;
+        let square = [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 10.0),
+            Vec2::new(0.0, 10.0),
+        ];
+        let smooth = crate::app::catmull_rom(&square, true, 8);
+        assert!(smooth.len() > square.len() * 4, "el suavizado no densificó");
+        println!("Suavizado de nodos: {} → {} puntos", square.len(), smooth.len());
     }
 
     println!("\n✓ Self-test completado sin errores.");

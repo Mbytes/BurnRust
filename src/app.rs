@@ -161,13 +161,29 @@ pub struct RustburnApp {
 
     // camera / photo alignment
     cam_device: String, // v4l2 device for live capture, e.g. /dev/video0
-    cam_photo: Option<(Vec<u8>, usize, usize)>, // rgba, w, h
+    cam_orig: Option<(Vec<u8>, usize, usize)>, // pristine photo (rgba, w, h)
+    cam_photo: Option<(Vec<u8>, usize, usize)>, // displayed/corrected (rgba, w, h)
     cam_raw_tex: Option<egui::TextureHandle>,
     cam_tex: Option<egui::TextureHandle>, // bed-aligned (warped)
     cam_show: bool,
     cam_opacity: f32,
+    // lens distortion correction coefficients (radial k1/k2)
+    cam_k1: f64,
+    cam_k2: f64,
     calibrating: bool,
     cal_points: Vec<Vec2>,
+
+    // bitmap tracing (vectorize an image)
+    trace_threshold: u8,
+    trace_invert: bool,
+    trace_simplify: f64,
+
+    // print & cut registration
+    show_printcut: bool,
+    pc_marks: Vec<Vec2>,            // designed mark positions (document mm)
+    pc_measured: Vec<(f64, f64)>,  // measured machine X/Y per mark
+    pc_transform: Option<crate::geometry::Affine>,
+    pc_apply: bool,
 
     // GRBL settings ($$)
     grbl_settings: Vec<crate::grbl_settings::Setting>,
@@ -284,13 +300,24 @@ impl RustburnApp {
             mat_test: crate::gcode::MaterialTest::default(),
             show_mat_test: false,
             cam_device: "/dev/video0".to_string(),
+            cam_orig: None,
             cam_photo: None,
             cam_raw_tex: None,
             cam_tex: None,
             cam_show: true,
             cam_opacity: 0.6,
+            cam_k1: 0.0,
+            cam_k2: 0.0,
             calibrating: false,
             cal_points: Vec::new(),
+            trace_threshold: 128,
+            trace_invert: false,
+            trace_simplify: 0.15,
+            show_printcut: false,
+            pc_marks: Vec::new(),
+            pc_measured: Vec::new(),
+            pc_transform: None,
+            pc_apply: false,
             grbl_settings: Vec::new(),
             show_grbl: false,
             show_help: false,
@@ -377,6 +404,7 @@ impl RustburnApp {
             }
             let ci = egui::ColorImage::from_rgba_unmultiplied([pw, ph], &buf);
             app.cam_raw_tex = Some(ctx.load_texture("cam_raw", ci, egui::TextureOptions::LINEAR));
+            app.cam_orig = Some((buf.clone(), pw, ph));
             app.cam_photo = Some((buf, pw, ph));
             app.cal_points = vec![
                 Vec2::new(22.0, 16.0),
@@ -933,9 +961,11 @@ impl RustburnApp {
         } else {
             None
         };
+        let align_transform = if self.pc_apply { self.pc_transform } else { None };
         crate::gcode::GenOptions {
             only_ids,
             relative_anchor,
+            align_transform,
         }
     }
 
@@ -1283,10 +1313,16 @@ impl RustburnApp {
 
                     ui.strong("Edición avanzada");
                     ui.label("• Snap objetos: al mover, ajusta bordes/centros a otros objetos y a la cama.");
-                    ui.label("• Operaciones: Cerrar trazado, Recortar a la cama (clip).");
+                    ui.label("• Operaciones: Cerrar trazado, Recortar a la cama, Suavizar nodos (bézier).");
+                    ui.label("• Nodos (✎): arrastra para mover, doble clic borra un nodo o inserta en un tramo.");
                     ui.label("• Numeración/texto variable: plantilla con # (p.ej. 'Pieza ###').");
                     ui.label("• Simulación del recorrido: ▶/⏸/⏮, barra de progreso y velocidad.");
-                    ui.label("• Cámara USB en vivo: captura un fotograma (ffmpeg) y calíbralo.");
+                    ui.add_space(6.0);
+
+                    ui.strong("Cámara y Print&Cut");
+                    ui.label("• Cámara USB en vivo: captura un fotograma (ffmpeg) y calíbralo (4 esquinas).");
+                    ui.label("• Corrección de distorsión de lente (k1/k2) sobre la foto.");
+                    ui.label("• Print&Cut (✛): añade marcas de registro, mide su posición y alinea el corte.");
                     ui.add_space(6.0);
 
                     ui.strong("Capas y materiales");
@@ -1297,6 +1333,7 @@ impl RustburnApp {
                     ui.strong("Grabado de imagen");
                     ui.label("• Ajustes: brillo, contraste, gamma, invertir.");
                     ui.label("• Tramado: Grises, Umbral, Floyd-Steinberg, Atkinson, Jarvis, Bayer.");
+                    ui.label("• Vectorizar (⌁): traza la imagen a un umbral y crea contornos de corte.");
                     ui.add_space(6.0);
 
                     ui.strong("Máquina (GRBL)");
@@ -1430,6 +1467,149 @@ impl RustburnApp {
         self.show_array = open;
     }
 
+    // --- Print & Cut (registration marks) ------------------------------------
+
+    /// Add cross-shaped registration marks at three corners of the design bbox and
+    /// remember their nominal document positions for later alignment.
+    fn add_registration_marks(&mut self) {
+        let Some(bb) = self.doc.bbox() else {
+            self.status_msg = "No hay diseño para marcar".into();
+            return;
+        };
+        // Push the marks slightly outside the design so they don't overlap it.
+        let m = 8.0;
+        let marks = vec![
+            Vec2::new(bb.min.x - m, bb.min.y - m), // esquina 1 (origen)
+            Vec2::new(bb.max.x + m, bb.min.y - m), // esquina 2 (eje X)
+            Vec2::new(bb.min.x - m, bb.max.y + m), // esquina 3 (eje Y)
+        ];
+        let arm = 4.0; // cross half-length, mm
+        let mut polylines = Vec::new();
+        for mk in &marks {
+            polylines.push(crate::geometry::Polyline {
+                points: vec![
+                    Vec2::new(mk.x - arm, mk.y),
+                    Vec2::new(mk.x + arm, mk.y),
+                ],
+                closed: false,
+            });
+            polylines.push(crate::geometry::Polyline {
+                points: vec![
+                    Vec2::new(mk.x, mk.y - arm),
+                    Vec2::new(mk.x, mk.y + arm),
+                ],
+                closed: false,
+            });
+        }
+        self.pc_marks = marks;
+        self.pc_measured = self
+            .pc_marks
+            .iter()
+            .map(|p| {
+                let mach = crate::gcode::machine_to_doc(*p, &self.doc.machine);
+                (mach.x, mach.y)
+            })
+            .collect();
+        self.pc_transform = None;
+        self.pc_apply = false;
+        self.snapshot();
+        let layer = self.selected_layer().min(self.doc.layers.len().saturating_sub(1));
+        let id = self.doc.alloc_id();
+        let obj = Object::new(
+            id,
+            "marcas de registro".into(),
+            layer,
+            ObjectKind::Vector(crate::model::VectorData { polylines }),
+            Vec2::new(0.0, 0.0),
+        );
+        let idx = self.doc.add_object(obj);
+        self.doc.selected = Some(idx);
+        self.status_msg = "Marcas de registro añadidas (3 cruces)".into();
+    }
+
+    /// Fit the registration alignment from measured machine positions of the marks.
+    fn compute_printcut_alignment(&mut self) {
+        if self.pc_marks.len() < 2 || self.pc_measured.len() != self.pc_marks.len() {
+            self.status_msg = "Añade marcas y mide su posición primero".into();
+            return;
+        }
+        let src = self.pc_marks.clone();
+        let dst: Vec<Vec2> = self
+            .pc_measured
+            .iter()
+            .map(|&(mx, my)| crate::gcode::machine_to_doc(Vec2::new(mx, my), &self.doc.machine))
+            .collect();
+        match crate::geometry::fit_affine(&src, &dst) {
+            Some(t) => {
+                self.pc_transform = Some(t);
+                self.pc_apply = true;
+                self.status_msg = "Alineación print&cut calculada ✓".into();
+            }
+            None => {
+                self.pc_transform = None;
+                self.status_msg = "Alineación fallida (marcas colineales/duplicadas)".into();
+            }
+        }
+    }
+
+    fn printcut_window(&mut self, ctx: &egui::Context) {
+        if !self.show_printcut {
+            return;
+        }
+        let mut open = self.show_printcut;
+        egui::Window::new("✛ Print & Cut")
+            .open(&mut open)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                ui.label("Corta sobre una impresión ya existente alineando el láser a marcas de registro.");
+                ui.weak("1) Añade marcas y expórtalas/imprímelas con el diseño.");
+                ui.weak("2) Coloca la hoja impresa en la cama.");
+                ui.weak("3) Haz jog del cabezal a cada marca y anota su X/Y de máquina.");
+                ui.weak("4) Calcula la alineación y genera el corte.");
+                ui.separator();
+                if ui.button("✛ Añadir marcas de registro").clicked() {
+                    self.add_registration_marks();
+                }
+                if self.pc_marks.is_empty() {
+                    ui.weak("Sin marcas todavía.");
+                } else {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Marcas: diseño → medida (máquina)").strong());
+                    egui::Grid::new("pc_marks_grid")
+                        .num_columns(3)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label("Diseño (mm)");
+                            ui.label("X máquina");
+                            ui.label("Y máquina");
+                            ui.end_row();
+                            for (i, mk) in self.pc_marks.iter().enumerate() {
+                                ui.label(format!("{:.1}, {:.1}", mk.x, mk.y));
+                                if let Some(meas) = self.pc_measured.get_mut(i) {
+                                    ui.add(egui::DragValue::new(&mut meas.0).speed(0.1).suffix(" mm"));
+                                    ui.add(egui::DragValue::new(&mut meas.1).speed(0.1).suffix(" mm"));
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(4.0);
+                    if ui.button("📐 Calcular alineación").clicked() {
+                        self.compute_printcut_alignment();
+                    }
+                    let has = self.pc_transform.is_some();
+                    ui.add_enabled_ui(has, |ui| {
+                        ui.checkbox(&mut self.pc_apply, "Aplicar alineación al corte");
+                    });
+                    if has {
+                        ui.weak("La alineación se aplica al generar G-code.");
+                    } else {
+                        ui.weak("Aún sin alineación calculada.");
+                    }
+                }
+            });
+        self.show_printcut = open;
+    }
+
     // --- event pump ----------------------------------------------------------
     fn pump_device(&mut self) {
         let events = self.device.poll();
@@ -1489,6 +1669,7 @@ impl eframe::App for RustburnApp {
         self.config_window(ctx);
         self.help_window(ctx);
         self.array_window(ctx);
+        self.printcut_window(ctx);
     }
 }
 
@@ -1610,6 +1791,8 @@ impl RustburnApp {
                 }
             }
             ui.toggle_value(&mut self.show_mat_test, "🔥 Test material");
+            ui.toggle_value(&mut self.show_printcut, "✛ Print&Cut")
+                .on_hover_text("Marcas de registro y alineación de corte sobre impresión");
             ui.toggle_value(&mut self.show_grbl, "⚙ Ajustes GRBL");
             ui.toggle_value(&mut self.show_config, "🛠 Configuración");
             ui.toggle_value(&mut self.show_help, "❓ Ayuda");
@@ -1694,7 +1877,25 @@ impl RustburnApp {
             }
             ui.checkbox(&mut self.cam_show, "Mostrar superposición");
             ui.add(egui::Slider::new(&mut self.cam_opacity, 0.0..=1.0).text("Opacidad"));
+            // Lens distortion correction (radial k1/k2).
+            ui.collapsing("Distorsión de lente", |ui| {
+                ui.weak("Corrige barril (−) o cojín (+)");
+                let mut dirty = false;
+                let r = ui.add(egui::Slider::new(&mut self.cam_k1, -0.5..=0.5).text("k1"));
+                dirty |= r.changed();
+                let r = ui.add(egui::Slider::new(&mut self.cam_k2, -0.3..=0.3).text("k2"));
+                dirty |= r.changed();
+                if ui.button("↺ Sin distorsión").clicked() {
+                    self.cam_k1 = 0.0;
+                    self.cam_k2 = 0.0;
+                    dirty = true;
+                }
+                if dirty {
+                    self.rebuild_cam_correction(&ctx);
+                }
+            });
             if ui.button("🗑 Quitar foto").clicked() {
+                self.cam_orig = None;
                 self.cam_photo = None;
                 self.cam_tex = None;
                 self.cam_raw_tex = None;
@@ -1927,6 +2128,7 @@ impl RustburnApp {
         let mut do_delete = false;
         let mut do_dup = false;
         let mut img_dirty = false;
+        let mut do_trace = false;
         let obj_id = self.doc.objects[idx].id;
 
         {
@@ -2027,7 +2229,31 @@ impl RustburnApp {
                     began = true;
                     img_dirty = true;
                 }
+                ui.separator();
+                ui.label(egui::RichText::new("Vectorizar (trazar)").strong());
+                ui.weak("Convierte la imagen en contornos de corte");
+                egui::Grid::new("trace_opts").num_columns(2).show(ui, |ui| {
+                    ui.label("Umbral");
+                    ui.add(egui::Slider::new(&mut self.trace_threshold, 1..=254));
+                    ui.end_row();
+                    ui.label("Suavizado");
+                    ui.add(
+                        egui::Slider::new(&mut self.trace_simplify, 0.0..=2.0).suffix(" mm"),
+                    );
+                    ui.end_row();
+                });
+                ui.checkbox(&mut self.trace_invert, "Invertir (trazar lo claro)");
+                if ui
+                    .button("⌁ Vectorizar imagen")
+                    .on_hover_text("Traza los bordes a este umbral y crea un objeto vectorial")
+                    .clicked()
+                {
+                    do_trace = true;
+                }
             }
+        }
+        if do_trace {
+            self.trace_selected_image(idx);
         }
         if img_dirty {
             self.textures.remove(&obj_id);
@@ -2509,7 +2735,44 @@ impl RustburnApp {
             {
                 self.clip_to_bed();
             }
+            if ui.button("〰 Suavizar nodos")
+                .on_hover_text("Redondea las esquinas con curvas tipo bézier (spline Catmull-Rom) a través de los nodos")
+                .clicked()
+            {
+                self.smooth_selected();
+            }
         });
+        ui.weak("Nodos: arrastra para mover · doble clic en un nodo lo borra · doble clic en un tramo inserta uno");
+    }
+
+    /// Replace each polyline of the selection with a Catmull-Rom spline through its
+    /// nodes, giving bézier-like rounded curves. Closed paths wrap; open paths pin
+    /// their endpoints.
+    fn smooth_selected(&mut self) {
+        let idx = self.selected_indices();
+        if idx.is_empty() {
+            self.status_msg = "Selecciona un objeto vectorial".into();
+            return;
+        }
+        let mut changed = 0;
+        self.snapshot();
+        for &i in &idx {
+            if let Some(o) = self.doc.objects.get_mut(i) {
+                if let ObjectKind::Vector(v) = &mut o.kind {
+                    for pl in &mut v.polylines {
+                        if pl.points.len() >= 3 {
+                            pl.points = catmull_rom(&pl.points, pl.closed, 8);
+                            changed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        self.status_msg = if changed > 0 {
+            format!("Suavizados {changed} trazado(s)")
+        } else {
+            "Nada que suavizar (mínimo 3 nodos)".into()
+        };
     }
 
     /// Create a vector object from local polylines placed at `pos`, select it.
@@ -2594,6 +2857,50 @@ impl RustburnApp {
             }
         }
         self.status_msg = format!("Recortados {clipped} objeto(s) a la cama");
+    }
+
+    /// Trace the selected image object into a vector object, overlaid with the
+    /// same transform so it registers exactly on top of the engraving.
+    fn trace_selected_image(&mut self, idx: usize) {
+        let Some(obj) = self.doc.objects.get(idx) else {
+            return;
+        };
+        let ObjectKind::Image(img) = &obj.kind else {
+            self.status_msg = "Selecciona una imagen para vectorizar".into();
+            return;
+        };
+        let proc = img.processed_gray();
+        let (w, h) = (img.width_px as usize, img.height_px as usize);
+        let pls = crate::trace::trace_bitmap(
+            &proc,
+            w,
+            h,
+            self.trace_threshold,
+            self.trace_invert,
+            img.width_mm,
+            img.height_mm,
+            self.trace_simplify,
+        );
+        if pls.is_empty() {
+            self.status_msg = "El trazado no encontró contornos (ajusta el umbral)".into();
+            return;
+        }
+        let n = pls.len();
+        let (pos, rot, scale, layer) = (obj.pos, obj.rotation, obj.scale, obj.layer);
+        self.snapshot();
+        let id = self.doc.alloc_id();
+        let mut vobj = Object::new(
+            id,
+            "vectorizado".into(),
+            layer,
+            ObjectKind::Vector(crate::model::VectorData { polylines: pls }),
+            pos,
+        );
+        vobj.rotation = rot;
+        vobj.scale = scale;
+        let new_idx = self.doc.add_object(vobj);
+        self.doc.selected = Some(new_idx);
+        self.status_msg = format!("Imagen vectorizada: {n} contorno(s)");
     }
 
     fn obj_doc_polylines(&self, idx: usize) -> Vec<crate::geometry::Polyline> {
@@ -2818,12 +3125,32 @@ impl RustburnApp {
         let rgba = img.to_rgba8();
         let (w, h) = (rgba.width() as usize, rgba.height() as usize);
         let buf = rgba.into_raw();
-        let ci = egui::ColorImage::from_rgba_unmultiplied([w, h], &buf);
-        self.cam_raw_tex = Some(ctx.load_texture("cam_raw", ci, egui::TextureOptions::LINEAR));
-        self.cam_photo = Some((buf, w, h));
+        self.cam_orig = Some((buf, w, h));
         self.cam_tex = None;
         self.cal_points.clear();
+        self.rebuild_cam_correction(ctx);
         Ok((w, h))
+    }
+
+    /// Rebuild the displayed photo from the pristine capture, applying the current
+    /// lens-distortion correction, and refresh the raw texture. Re-runs the bed
+    /// warp if a calibration is already in place.
+    fn rebuild_cam_correction(&mut self, ctx: &egui::Context) {
+        let Some((orig, w, h)) = self.cam_orig.as_ref() else {
+            return;
+        };
+        let (w, h) = (*w, *h);
+        let corrected = if self.cam_k1 == 0.0 && self.cam_k2 == 0.0 {
+            orig.clone()
+        } else {
+            crate::homography::undistort(orig, w, h, self.cam_k1, self.cam_k2)
+        };
+        let ci = egui::ColorImage::from_rgba_unmultiplied([w, h], &corrected);
+        self.cam_raw_tex = Some(ctx.load_texture("cam_raw", ci, egui::TextureOptions::LINEAR));
+        self.cam_photo = Some((corrected, w, h));
+        if self.cal_points.len() >= 4 {
+            self.compute_calibration(ctx);
+        }
     }
 
     fn compute_calibration(&mut self, ctx: &egui::Context) {
@@ -3957,6 +4284,52 @@ fn dist_point_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     let t = (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2).clamp(0.0, 1.0);
     let proj = Pos2::new(a.x + t * ab.x, a.y + t * ab.y);
     p.distance(proj)
+}
+
+/// Catmull-Rom spline through `pts`, subdividing each segment into `sub` steps.
+/// For `closed` the control sequence wraps; otherwise the endpoints are pinned
+/// (duplicated) so the curve starts and ends exactly on them.
+pub(crate) fn catmull_rom(pts: &[Vec2], closed: bool, sub: usize) -> Vec<Vec2> {
+    let n = pts.len();
+    if n < 3 || sub < 1 {
+        return pts.to_vec();
+    }
+    let at = |i: isize| -> Vec2 {
+        if closed {
+            pts[i.rem_euclid(n as isize) as usize]
+        } else {
+            pts[i.clamp(0, n as isize - 1) as usize]
+        }
+    };
+    let seg_count = if closed { n } else { n - 1 };
+    let mut out = Vec::with_capacity(seg_count * sub + 1);
+    for i in 0..seg_count {
+        let p0 = at(i as isize - 1);
+        let p1 = at(i as isize);
+        let p2 = at(i as isize + 1);
+        let p3 = at(i as isize + 2);
+        for s in 0..sub {
+            let t = s as f64 / sub as f64;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            // Standard Catmull-Rom basis (tension 0.5).
+            let x = 0.5
+                * ((2.0 * p1.x)
+                    + (-p0.x + p2.x) * t
+                    + (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2
+                    + (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3);
+            let y = 0.5
+                * ((2.0 * p1.y)
+                    + (-p0.y + p2.y) * t
+                    + (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2
+                    + (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3);
+            out.push(Vec2::new(x, y));
+        }
+    }
+    if !closed {
+        out.push(pts[n - 1]);
+    }
+    out
 }
 
 /// Format a duration in seconds as `Hh Mm Ss` (compact).

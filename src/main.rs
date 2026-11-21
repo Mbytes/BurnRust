@@ -20,6 +20,7 @@ mod model;
 mod project;
 mod shapes;
 mod text;
+mod trace;
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rustburn=info"))
