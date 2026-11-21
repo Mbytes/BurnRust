@@ -289,5 +289,55 @@ pub fn run() {
     println!("Warp: {}/{} píxeles opacos", opaque, 40 * 30);
     assert!(opaque > 40 * 30 / 2, "el warp no rellenó la cama");
 
+    // Variable-text / numbering template expansion.
+    use crate::app::RustburnApp;
+    assert_eq!(RustburnApp::expand_template("Pieza ###", 7), "Pieza 007");
+    assert_eq!(RustburnApp::expand_template("N#", 42), "N42");
+    assert_eq!(RustburnApp::expand_template("sin hueco", 5), "sin hueco5");
+    assert_eq!(RustburnApp::expand_template("", 9), "9");
+    assert_eq!(RustburnApp::expand_template("##", -3), "-03");
+    println!("Numeración: plantillas de texto variable OK");
+
+    // Generation options: object filter + relative job origin.
+    {
+        use crate::gcode::{generate_with, GenOptions};
+        let doc3 = demo_document();
+        let cut_id = doc3.objects[0].id; // the rectangle on the cut layer
+        // Filter to the cut object only: no raster scan lines should appear.
+        let only = generate_with(
+            &doc3,
+            &GenOptions {
+                only_ids: Some(vec![cut_id]),
+                relative_anchor: None,
+            },
+        );
+        assert_eq!(only.stats.objects_out, 1, "el filtro no dejó 1 objeto");
+        let raster = only
+            .lines
+            .iter()
+            .filter(|l| l.contains(" S") && l.starts_with("G1 X"))
+            .count();
+        assert_eq!(raster, 0, "el filtro no excluyó la imagen raster");
+
+        // Relative origin: shifting the anchor must change coordinates but not count.
+        let abs = generate_with(&doc3, &GenOptions::default());
+        let rel = generate_with(
+            &doc3,
+            &GenOptions {
+                only_ids: None,
+                relative_anchor: Some(Vec2::new(20.0, 20.0)),
+            },
+        );
+        assert_eq!(abs.stats.objects_out, rel.stats.objects_out);
+        assert_ne!(
+            abs.lines, rel.lines,
+            "el origen relativo no cambió el G-code"
+        );
+        println!(
+            "Opciones de salida: filtro 1/{} obj · origen relativo desplaza coords OK",
+            doc3.objects.len()
+        );
+    }
+
     println!("\n✓ Self-test completado sin errores.");
 }

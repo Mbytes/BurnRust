@@ -255,6 +255,9 @@ pub struct Object {
     pub rotation: f64,
     /// Non-uniform scale factors.
     pub scale: Vec2,
+    /// Group id: objects sharing the same id move/transform together.
+    #[serde(default)]
+    pub group: Option<u64>,
 }
 
 impl Object {
@@ -267,6 +270,7 @@ impl Object {
             pos,
             rotation: 0.0,
             scale: Vec2::new(1.0, 1.0),
+            group: None,
         }
     }
 

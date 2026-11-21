@@ -28,10 +28,11 @@ enum Tool {
     Polygon,
     Polyline,
     Text,
+    Measure,
 }
 
 /// Which interaction the current pointer drag is performing.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Gesture {
     None,
     Pan,
@@ -39,6 +40,8 @@ enum Gesture {
         obj: usize,
         start_pos: Vec2,
         ptr_start: Vec2,
+        /// Other group members dragged along: (object index, start position).
+        group: Vec<(usize, Vec2)>,
     },
     Scale {
         obj: usize,
@@ -54,6 +57,21 @@ enum Gesture {
         start_rot: f64,
         start_angle: f64,
     },
+}
+
+/// A one-shot arrange action chosen from the properties panel.
+#[derive(Clone, Copy)]
+enum ArrangeAct {
+    Group,
+    Ungroup,
+    MirrorH,
+    MirrorV,
+    Rotate90,
+    /// (axis: 0 = X / 1 = Y, mode: -1 min, 0 centre, 1 max)
+    Align(u8, i8),
+    /// Distribute evenly along axis (0 = X, 1 = Y).
+    Distribute(u8),
+    OpenArray,
 }
 
 /// World (mm) <-> screen mapping for the canvas.
@@ -120,6 +138,13 @@ pub struct RustburnApp {
     polygon_sides: u32,
     text_content: String,
     text_height: f64,
+    // variable text / serial numbering
+    num_series: bool,
+    num_start: i64,
+    num_count: u32,
+    num_step: i64,
+    num_spacing: f64,
+    num_horizontal: bool,
     fontdb: usvg::fontdb::Database,
 
     // node editing: (object, polyline, point)
@@ -135,6 +160,7 @@ pub struct RustburnApp {
     show_mat_test: bool,
 
     // camera / photo alignment
+    cam_device: String, // v4l2 device for live capture, e.g. /dev/video0
     cam_photo: Option<(Vec<u8>, usize, usize)>, // rgba, w, h
     cam_raw_tex: Option<egui::TextureHandle>,
     cam_tex: Option<egui::TextureHandle>, // bed-aligned (warped)
@@ -150,6 +176,24 @@ pub struct RustburnApp {
     // help & configuration windows
     show_help: bool,
     show_config: bool,
+
+    // job output options (like LightBurn's laser panel)
+    cut_selected: bool,
+    use_job_origin: bool,
+    /// Which 3×3 point of the design bbox is the job origin: (col 0..2, row 0..2).
+    job_origin: (u8, u8),
+    // array / matrix duplicator
+    show_array: bool,
+    array_cols: u32,
+    array_rows: u32,
+    array_dx: f64,
+    array_dy: f64,
+    array_circular: bool,
+    array_count: u32,
+    array_radius: f64,
+    // measure tool
+    measure_a: Option<Vec2>,
+    measure_b: Option<Vec2>,
 
     // undo / redo
     history: Vec<Document>,
@@ -218,6 +262,12 @@ impl RustburnApp {
             polygon_sides: 6,
             text_content: "TEXTO".to_string(),
             text_height: 20.0,
+            num_series: false,
+            num_start: 1,
+            num_count: 10,
+            num_step: 1,
+            num_spacing: 30.0,
+            num_horizontal: false,
             fontdb: crate::text::build_font_db(),
             node_drag: None,
             multi: Vec::new(),
@@ -226,6 +276,7 @@ impl RustburnApp {
             new_material_name: String::new(),
             mat_test: crate::gcode::MaterialTest::default(),
             show_mat_test: false,
+            cam_device: "/dev/video0".to_string(),
             cam_photo: None,
             cam_raw_tex: None,
             cam_tex: None,
@@ -237,6 +288,19 @@ impl RustburnApp {
             show_grbl: false,
             show_help: false,
             show_config: false,
+            cut_selected: false,
+            use_job_origin: false,
+            job_origin: (0, 2), // front-left by default
+            show_array: false,
+            array_cols: 3,
+            array_rows: 2,
+            array_dx: 30.0,
+            array_dy: 30.0,
+            array_circular: false,
+            array_count: 6,
+            array_radius: 40.0,
+            measure_a: None,
+            measure_b: None,
             history: Vec::new(),
             future: Vec::new(),
             gcode: Vec::new(),
@@ -423,28 +487,433 @@ impl RustburnApp {
     }
 
     fn duplicate_selected(&mut self) {
-        if let Some(i) = self.doc.selected {
+        let idx = self.selected_indices();
+        if idx.is_empty() {
+            return;
+        }
+        self.snapshot();
+        // Clones of a group get a fresh shared group id.
+        let regroup = idx.len() > 1 || self.any_grouped_selected();
+        let new_gid = if regroup {
+            Some(
+                self.doc
+                    .objects
+                    .iter()
+                    .filter_map(|o| o.group)
+                    .max()
+                    .unwrap_or(0)
+                    + 1,
+            )
+        } else {
+            None
+        };
+        let mut new_indices = Vec::new();
+        for &i in &idx {
             if let Some(obj) = self.doc.objects.get(i).cloned() {
-                self.snapshot();
-                let id = self.doc.alloc_id();
                 let mut clone = obj;
-                clone.id = id;
+                clone.id = self.doc.alloc_id();
                 clone.pos.x += 5.0;
                 clone.pos.y += 5.0;
-                let idx = self.doc.add_object(clone);
-                self.doc.selected = Some(idx);
+                clone.group = new_gid;
+                new_indices.push(self.doc.add_object(clone));
             }
+        }
+        if let Some(&first) = new_indices.first() {
+            self.doc.selected = Some(first);
+            self.multi = new_indices.into_iter().skip(1).collect();
         }
     }
 
     fn delete_selected(&mut self) {
-        if let Some(i) = self.doc.selected {
+        // Remove the whole current selection (object + group + extra picks).
+        let mut idx = self.selected_indices();
+        if idx.is_empty() {
+            return;
+        }
+        self.snapshot();
+        idx.sort_unstable();
+        idx.dedup();
+        for &i in idx.iter().rev() {
             if i < self.doc.objects.len() {
-                self.snapshot();
                 self.doc.objects.remove(i);
-                self.doc.selected = None;
             }
         }
+        self.doc.selected = None;
+        self.multi.clear();
+    }
+
+    // --- Grouping & selection helpers ------------------------------------
+
+    /// All object indices currently acted on: the primary selection, any
+    /// shift-picked extras, and every member of their groups. Deduplicated.
+    fn selected_indices(&self) -> Vec<usize> {
+        let mut seeds: Vec<usize> = Vec::new();
+        if let Some(s) = self.doc.selected {
+            seeds.push(s);
+        }
+        seeds.extend(self.multi.iter().copied());
+        let mut out: Vec<usize> = Vec::new();
+        for s in seeds {
+            for m in self.group_members(s) {
+                if !out.contains(&m) {
+                    out.push(m);
+                }
+            }
+        }
+        out
+    }
+
+    /// Indices of every object sharing `idx`'s group (including `idx`). If the
+    /// object has no group, just `[idx]`.
+    fn group_members(&self, idx: usize) -> Vec<usize> {
+        match self.doc.objects.get(idx).and_then(|o| o.group) {
+            Some(g) => (0..self.doc.objects.len())
+                .filter(|&i| self.doc.objects[i].group == Some(g))
+                .collect(),
+            None => vec![idx],
+        }
+    }
+
+    /// Group members *other than* `idx`, paired with their start positions
+    /// (used to drag the whole group together).
+    fn group_drag_members(&self, idx: usize) -> Vec<(usize, Vec2)> {
+        self.group_members(idx)
+            .into_iter()
+            .filter(|&i| i != idx)
+            .filter_map(|i| self.doc.objects.get(i).map(|o| (i, o.pos)))
+            .collect()
+    }
+
+    /// Select object `idx`; if it belongs to a group, light up the whole group.
+    fn select_with_group(&mut self, idx: usize) {
+        self.doc.selected = Some(idx);
+        self.multi.clear();
+        if self.doc.objects.get(idx).and_then(|o| o.group).is_some() {
+            self.multi = self
+                .group_members(idx)
+                .into_iter()
+                .filter(|&i| i != idx)
+                .collect();
+        }
+    }
+
+    /// Group the current selection (primary + extras) under a fresh id.
+    fn group_selected(&mut self) {
+        let idx = self.selected_indices();
+        if idx.len() < 2 {
+            self.status_msg = "Selecciona 2+ objetos (Shift+clic) para agrupar".into();
+            return;
+        }
+        self.snapshot();
+        let gid = self
+            .doc
+            .objects
+            .iter()
+            .filter_map(|o| o.group)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        for &i in &idx {
+            if let Some(o) = self.doc.objects.get_mut(i) {
+                o.group = Some(gid);
+            }
+        }
+        self.status_msg = format!("Agrupados {} objetos", idx.len());
+    }
+
+    /// Dissolve the group(s) touched by the current selection.
+    fn ungroup_selected(&mut self) {
+        let idx = self.selected_indices();
+        if idx.is_empty() {
+            return;
+        }
+        self.snapshot();
+        for &i in &idx {
+            if let Some(o) = self.doc.objects.get_mut(i) {
+                o.group = None;
+            }
+        }
+        self.multi.clear();
+        self.status_msg = "Desagrupado".into();
+    }
+
+    /// Assign every selected object to layer `li` (palette click).
+    fn assign_layer(&mut self, li: usize) {
+        let idx = self.selected_indices();
+        if idx.is_empty() || li >= self.doc.layers.len() {
+            return;
+        }
+        self.snapshot();
+        for &i in &idx {
+            if let Some(o) = self.doc.objects.get_mut(i) {
+                o.layer = li;
+            }
+        }
+        self.status_msg = format!("Movido a capa {}", li + 1);
+    }
+
+    fn any_grouped_selected(&self) -> bool {
+        self.selected_indices()
+            .iter()
+            .any(|&i| self.doc.objects.get(i).and_then(|o| o.group).is_some())
+    }
+
+    // --- Arrange: mirror / rotate / align --------------------------------
+
+    /// Mirror the whole selection about its common centre (`horiz` = flip X).
+    fn mirror_selected(&mut self, horiz: bool) {
+        let idx = self.selected_indices();
+        if idx.is_empty() {
+            return;
+        }
+        let Some(bb) = self.selection_bbox(&idx) else { return };
+        let (cx, cy) = ((bb.min.x + bb.max.x) / 2.0, (bb.min.y + bb.max.y) / 2.0);
+        self.snapshot();
+        for &i in &idx {
+            if let Some(o) = self.doc.objects.get_mut(i) {
+                if horiz {
+                    o.scale.x = -o.scale.x;
+                    o.pos.x = 2.0 * cx - o.pos.x;
+                } else {
+                    o.scale.y = -o.scale.y;
+                    o.pos.y = 2.0 * cy - o.pos.y;
+                }
+            }
+        }
+        self.status_msg = if horiz { "Espejo horizontal" } else { "Espejo vertical" }.into();
+    }
+
+    /// Rotate the whole selection +90° about its common centre.
+    fn rotate90_selected(&mut self) {
+        let idx = self.selected_indices();
+        if idx.is_empty() {
+            return;
+        }
+        let Some(bb) = self.selection_bbox(&idx) else { return };
+        let (cx, cy) = ((bb.min.x + bb.max.x) / 2.0, (bb.min.y + bb.max.y) / 2.0);
+        self.snapshot();
+        for &i in &idx {
+            if let Some(o) = self.doc.objects.get_mut(i) {
+                // Rotate the object's origin about the selection centre (+90° CW).
+                let (dx, dy) = (o.pos.x - cx, o.pos.y - cy);
+                o.pos = Vec2::new(cx - dy, cy + dx);
+                o.rotation = (o.rotation + 90.0).rem_euclid(360.0);
+            }
+        }
+        self.status_msg = "Rotado 90°".into();
+    }
+
+    /// Common bounding box of a set of object indices (document space).
+    fn selection_bbox(&self, idx: &[usize]) -> Option<crate::geometry::BBox> {
+        let mut acc = None;
+        for &i in idx {
+            acc = crate::geometry::BBox::union(acc, self.doc.objects.get(i).and_then(|o| o.bbox()));
+        }
+        acc
+    }
+
+    /// Align the selection. `axis` 0 = horizontal (X), 1 = vertical (Y);
+    /// `mode` -1 = min edge, 0 = centre, 1 = max edge.
+    fn align_selected(&mut self, axis: u8, mode: i8) {
+        let idx = self.selected_indices();
+        if idx.len() < 2 {
+            self.status_msg = "Selecciona 2+ objetos para alinear".into();
+            return;
+        }
+        let Some(target) = self.selection_bbox(&idx) else { return };
+        self.snapshot();
+        for &i in &idx {
+            let Some(bb) = self.doc.objects.get(i).and_then(|o| o.bbox()) else { continue };
+            let Some(o) = self.doc.objects.get_mut(i) else { continue };
+            if axis == 0 {
+                let want = match mode {
+                    -1 => target.min.x - bb.min.x,
+                    1 => target.max.x - bb.max.x,
+                    _ => (target.min.x + target.max.x) / 2.0 - (bb.min.x + bb.max.x) / 2.0,
+                };
+                o.pos.x += want;
+            } else {
+                let want = match mode {
+                    -1 => target.min.y - bb.min.y,
+                    1 => target.max.y - bb.max.y,
+                    _ => (target.min.y + target.max.y) / 2.0 - (bb.min.y + bb.max.y) / 2.0,
+                };
+                o.pos.y += want;
+            }
+        }
+        self.status_msg = "Alineado".into();
+    }
+
+    /// Distribute 3+ selected objects so their centres are evenly spaced along
+    /// `axis` (0 = X, 1 = Y) between the first and last.
+    fn distribute_selected(&mut self, axis: u8) {
+        let idx = self.selected_indices();
+        if idx.len() < 3 {
+            self.status_msg = "Selecciona 3+ objetos para distribuir".into();
+            return;
+        }
+        // Centre of each object along the axis.
+        let mut items: Vec<(usize, f64)> = idx
+            .iter()
+            .filter_map(|&i| {
+                self.doc.objects.get(i).and_then(|o| o.bbox()).map(|b| {
+                    let c = if axis == 0 { (b.min.x + b.max.x) / 2.0 } else { (b.min.y + b.max.y) / 2.0 };
+                    (i, c)
+                })
+            })
+            .collect();
+        if items.len() < 3 {
+            return;
+        }
+        items.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let first = items.first().unwrap().1;
+        let last = items.last().unwrap().1;
+        let step = (last - first) / (items.len() as f64 - 1.0);
+        self.snapshot();
+        for (k, (i, c)) in items.iter().enumerate() {
+            let target = first + step * k as f64;
+            let d = target - c;
+            if let Some(o) = self.doc.objects.get_mut(*i) {
+                if axis == 0 {
+                    o.pos.x += d;
+                } else {
+                    o.pos.y += d;
+                }
+            }
+        }
+        self.status_msg = "Distribuido".into();
+    }
+
+    /// Duplicate the selection into a grid or circular array.
+    fn apply_array(&mut self) {
+        let idx = self.selected_indices();
+        if idx.is_empty() {
+            self.status_msg = "Selecciona un objeto para la matriz".into();
+            return;
+        }
+        let src: Vec<Object> = idx
+            .iter()
+            .filter_map(|&i| self.doc.objects.get(i).cloned())
+            .collect();
+        if src.is_empty() {
+            return;
+        }
+        self.snapshot();
+        let mut made = 0usize;
+        if self.array_circular {
+            let n = self.array_count.max(2);
+            let Some(bb) = self.selection_bbox(&idx) else { return };
+            let cx = (bb.min.x + bb.max.x) / 2.0;
+            let cy = bb.min.y - self.array_radius; // centre is `radius` above the selection
+            for k in 1..n {
+                let ang = 2.0 * std::f64::consts::PI * k as f64 / n as f64;
+                let (sin, cos) = ang.sin_cos();
+                for o in &src {
+                    let mut c = o.clone();
+                    c.id = self.doc.alloc_id();
+                    c.group = None;
+                    let (dx, dy) = (o.pos.x - cx, o.pos.y - cy);
+                    c.pos = Vec2::new(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos);
+                    c.rotation = (o.rotation + ang.to_degrees()).rem_euclid(360.0);
+                    self.doc.add_object(c);
+                    made += 1;
+                }
+            }
+        } else {
+            let cols = self.array_cols.max(1);
+            let rows = self.array_rows.max(1);
+            for r in 0..rows {
+                for col in 0..cols {
+                    if r == 0 && col == 0 {
+                        continue;
+                    }
+                    for o in &src {
+                        let mut c = o.clone();
+                        c.id = self.doc.alloc_id();
+                        c.group = None;
+                        c.pos = Vec2::new(
+                            o.pos.x + col as f64 * self.array_dx,
+                            o.pos.y + r as f64 * self.array_dy,
+                        );
+                        self.doc.add_object(c);
+                        made += 1;
+                    }
+                }
+            }
+        }
+        self.status_msg = format!("Matriz: {made} copia(s)");
+    }
+
+    /// Build the generation options from the laser-panel toggles.
+    fn current_gen_options(&self) -> crate::gcode::GenOptions {
+        let only_ids = if self.cut_selected {
+            Some(
+                self.selected_indices()
+                    .iter()
+                    .filter_map(|&i| self.doc.objects.get(i).map(|o| o.id))
+                    .collect::<Vec<u64>>(),
+            )
+        } else {
+            None
+        };
+        let relative_anchor = if self.use_job_origin {
+            self.job_origin_point()
+        } else {
+            None
+        };
+        crate::gcode::GenOptions {
+            only_ids,
+            relative_anchor,
+        }
+    }
+
+    /// The document-space point selected by the 3×3 job-origin picker.
+    fn job_origin_point(&self) -> Option<Vec2> {
+        let bb = if self.cut_selected {
+            self.selection_bbox(&self.selected_indices())
+        } else {
+            self.doc.bbox()
+        }?;
+        let (col, row) = self.job_origin;
+        let x = match col {
+            0 => bb.min.x,
+            2 => bb.max.x,
+            _ => (bb.min.x + bb.max.x) / 2.0,
+        };
+        let y = match row {
+            0 => bb.min.y,
+            2 => bb.max.y,
+            _ => (bb.min.y + bb.max.y) / 2.0,
+        };
+        Some(Vec2::new(x, y))
+    }
+
+    /// Generate G-code honouring the current options, updating messages.
+    fn generate_gcode(&mut self) {
+        let opts = self.current_gen_options();
+        let job = crate::gcode::generate_with(&self.doc, &opts);
+        self.gcode = job.lines;
+        self.recompute_toolpath();
+        let eta = self
+            .toolpath
+            .as_ref()
+            .map(|t| format!(" · ⏱ {}", fmt_duration(t.seconds)))
+            .unwrap_or_default();
+        let extra = match (self.cut_selected, self.use_job_origin) {
+            (true, true) => " · solo selección · origen de pieza",
+            (true, false) => " · solo selección",
+            (false, true) => " · origen de pieza",
+            _ => "",
+        };
+        self.gcode_msg = format!(
+            "{} líneas · {} capa(s) · {} objeto(s){}{}",
+            self.gcode.len(),
+            job.stats.layers_out,
+            job.stats.objects_out,
+            eta,
+            extra
+        );
+        self.status_msg = "G-code generado".into();
     }
 
     fn recompute_toolpath(&mut self) {
@@ -460,7 +929,7 @@ impl RustburnApp {
         if ctx.wants_keyboard_input() {
             return;
         }
-        let (undo, redo, dup, del) = ctx.input(|i| {
+        let (undo, redo, dup, del, group, ungroup) = ctx.input(|i| {
             let cmd = i.modifiers.command || i.modifiers.ctrl;
             (
                 cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
@@ -468,6 +937,8 @@ impl RustburnApp {
                     || (i.modifiers.shift && i.key_pressed(egui::Key::Z))),
                 cmd && i.key_pressed(egui::Key::D),
                 i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
+                cmd && !i.modifiers.shift && i.key_pressed(egui::Key::G),
+                cmd && i.modifiers.shift && i.key_pressed(egui::Key::G),
             )
         });
         if undo {
@@ -481,6 +952,12 @@ impl RustburnApp {
         }
         if del {
             self.delete_selected();
+        }
+        if group {
+            self.group_selected();
+        }
+        if ungroup {
+            self.ungroup_selected();
         }
     }
 
@@ -675,7 +1152,14 @@ impl RustburnApp {
                     ui.strong("Atajos de teclado");
                     ui.label("• Ctrl+Z / Ctrl+Y: deshacer / rehacer.");
                     ui.label("• Ctrl+D: duplicar selección.");
+                    ui.label("• Ctrl+G / Ctrl+Shift+G: agrupar / desagrupar.");
                     ui.label("• Supr: eliminar selección.");
+                    ui.add_space(6.0);
+
+                    ui.strong("Organizar (panel Objeto)");
+                    ui.label("• Agrupar/Desagrupar; Espejo H/V; Rotar 90°.");
+                    ui.label("• Alinear (6 direcciones), Distribuir H/V, Matriz (rejilla/círculo).");
+                    ui.label("• Shift+clic: añadir objetos a la selección.");
                     ui.add_space(6.0);
 
                     ui.strong("Capas y materiales");
@@ -703,6 +1187,120 @@ impl RustburnApp {
                 });
             });
         self.show_help = open;
+    }
+
+    /// Bottom status bar: layer colour palette + cursor read-out + selection info.
+    fn status_bar_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_centered(|ui| {
+            // Current layer of the selected object (for the outline highlight).
+            let cur_layer = self.doc.selected.and_then(|i| self.doc.objects.get(i)).map(|o| o.layer);
+            let mut assign: Option<usize> = None;
+            for li in 0..self.doc.layers.len() {
+                let layer = &self.doc.layers[li];
+                let c = layer.color;
+                let color = Color32::from_rgb(c[0], c[1], c[2]);
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                ui.painter().rect_filled(rect, 2.0, color);
+                let outline = if cur_layer == Some(li) {
+                    Stroke::new(2.0_f32, Color32::WHITE)
+                } else {
+                    Stroke::new(1.0_f32, Color32::from_gray(60))
+                };
+                ui.painter().rect_stroke(rect, 2.0, outline);
+                let resp = resp.on_hover_text(format!(
+                    "Capa {}: {} — clic para asignar la selección",
+                    li + 1,
+                    layer.name
+                ));
+                if resp.clicked() {
+                    assign = Some(li);
+                }
+            }
+            if let Some(li) = assign {
+                self.assign_layer(li);
+            }
+
+            ui.separator();
+            // Cursor read-out.
+            match self.cursor_world {
+                Some(cw) => ui.monospace(format!("X {:>7.2}  Y {:>7.2} mm", cw.x, cw.y)),
+                None => ui.monospace("X   —      Y   —   mm"),
+            };
+            // Selection summary.
+            let n = self.selected_indices().len();
+            if n > 0 {
+                ui.separator();
+                if let Some(bb) = self.selection_bbox(&self.selected_indices()) {
+                    ui.label(format!(
+                        "sel: {} obj · {:.1}×{:.1} mm",
+                        n,
+                        bb.width(),
+                        bb.height()
+                    ));
+                } else {
+                    ui.label(format!("sel: {n} obj"));
+                }
+            }
+            if self.tool == Tool::Measure {
+                ui.separator();
+                ui.label("📏 Medir: clic en 2 puntos");
+            }
+        });
+    }
+
+    fn array_window(&mut self, ctx: &egui::Context) {
+        if !self.show_array {
+            return;
+        }
+        let mut open = self.show_array;
+        let mut apply = false;
+        egui::Window::new("▦ Matriz / Array")
+            .open(&mut open)
+            .default_width(280.0)
+            .show(ctx, |ui| {
+                ui.label("Duplica la selección en rejilla o en círculo.");
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.array_circular, false, "▦ Rejilla");
+                    ui.selectable_value(&mut self.array_circular, true, "◯ Circular");
+                });
+                ui.add_space(4.0);
+                if self.array_circular {
+                    egui::Grid::new("arr_circ").num_columns(2).show(ui, |ui| {
+                        ui.label("Copias");
+                        ui.add(egui::DragValue::new(&mut self.array_count).range(2..=200));
+                        ui.end_row();
+                        ui.label("Radio (mm)");
+                        ui.add(egui::DragValue::new(&mut self.array_radius).range(1.0..=1000.0).speed(0.5));
+                        ui.end_row();
+                    });
+                    ui.weak("Centro: el radio por encima de la selección.");
+                } else {
+                    egui::Grid::new("arr_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Columnas");
+                        ui.add(egui::DragValue::new(&mut self.array_cols).range(1..=100));
+                        ui.end_row();
+                        ui.label("Filas");
+                        ui.add(egui::DragValue::new(&mut self.array_rows).range(1..=100));
+                        ui.end_row();
+                        ui.label("Separación X (mm)");
+                        ui.add(egui::DragValue::new(&mut self.array_dx).speed(0.5));
+                        ui.end_row();
+                        ui.label("Separación Y (mm)");
+                        ui.add(egui::DragValue::new(&mut self.array_dy).speed(0.5));
+                        ui.end_row();
+                    });
+                }
+                ui.separator();
+                if ui.button("✅ Aplicar").clicked() {
+                    apply = true;
+                }
+            });
+        if apply {
+            self.apply_array();
+        }
+        self.show_array = open;
     }
 
     // --- event pump ----------------------------------------------------------
@@ -741,6 +1339,9 @@ impl eframe::App for RustburnApp {
             .resizable(true)
             .default_width(320.0)
             .show(ctx, |ui| self.right_panel_ui(ui));
+        egui::TopBottomPanel::bottom("statusbar")
+            .exact_height(26.0)
+            .show(ctx, |ui| self.status_bar_ui(ui));
         egui::TopBottomPanel::bottom("console")
             .resizable(true)
             .default_height(160.0)
@@ -754,6 +1355,7 @@ impl eframe::App for RustburnApp {
         self.grbl_window(ctx);
         self.config_window(ctx);
         self.help_window(ctx);
+        self.array_window(ctx);
     }
 }
 
@@ -841,22 +1443,7 @@ impl RustburnApp {
             }
             ui.separator();
             if ui.button("⚙ Generar G-code").clicked() {
-                let job = crate::gcode::generate(&self.doc);
-                self.gcode = job.lines;
-                self.recompute_toolpath();
-                let eta = self
-                    .toolpath
-                    .as_ref()
-                    .map(|t| format!(" · ⏱ {}", fmt_duration(t.seconds)))
-                    .unwrap_or_default();
-                self.gcode_msg = format!(
-                    "{} líneas · {} capa(s) · {} objeto(s){}",
-                    self.gcode.len(),
-                    job.stats.layers_out,
-                    job.stats.objects_out,
-                    eta
-                );
-                self.status_msg = "G-code generado".into();
+                self.generate_gcode();
             }
             ui.toggle_value(&mut self.show_toolpath, "👁 Recorrido");
             ui.toggle_value(&mut self.show_mat_test, "🔥 Test material");
@@ -915,9 +1502,21 @@ impl RustburnApp {
     fn cam_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Cámara / foto");
         let ctx = ui.ctx().clone();
-        if ui.button("📷 Cargar foto del tablero").clicked() {
-            self.load_cam_photo(&ctx);
-        }
+        ui.horizontal(|ui| {
+            ui.label("Dispositivo:");
+            ui.add(egui::TextEdit::singleline(&mut self.cam_device).desired_width(110.0));
+        });
+        ui.horizontal(|ui| {
+            if ui.button("📸 Capturar cámara USB")
+                .on_hover_text("Captura un fotograma del dispositivo V4L2 con ffmpeg")
+                .clicked()
+            {
+                self.capture_cam_frame(&ctx);
+            }
+            if ui.button("📷 Cargar foto").clicked() {
+                self.load_cam_photo(&ctx);
+            }
+        });
         if self.cam_photo.is_some() {
             let label = if self.calibrating {
                 "… clic en 4 esquinas"
@@ -1279,6 +1878,74 @@ impl RustburnApp {
         }
 
         ui.checkbox(&mut self.lock_ratio, "Mantener proporción");
+
+        // --- Organizar: agrupar, espejo, rotar, alinear ---
+        let mut act: Option<ArrangeAct> = None;
+        ui.separator();
+        ui.label(egui::RichText::new("Organizar").strong());
+        let grouped = self.any_grouped_selected();
+        let multi_sel = self.selected_indices().len() >= 2;
+        ui.horizontal(|ui| {
+            if ui.add_enabled(multi_sel, egui::Button::new("🔗 Agrupar"))
+                .on_hover_text("Ctrl+G · agrupa la selección (Shift+clic añade objetos)")
+                .clicked()
+            {
+                act = Some(ArrangeAct::Group);
+            }
+            if ui.add_enabled(grouped, egui::Button::new("✂ Desagrupar"))
+                .on_hover_text("Ctrl+Shift+G")
+                .clicked()
+            {
+                act = Some(ArrangeAct::Ungroup);
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("⬌ Espejo H").clicked() {
+                act = Some(ArrangeAct::MirrorH);
+            }
+            if ui.button("⬍ Espejo V").clicked() {
+                act = Some(ArrangeAct::MirrorV);
+            }
+            if ui.button("⟳ 90°").clicked() {
+                act = Some(ArrangeAct::Rotate90);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Alinear:");
+            if ui.add_enabled(multi_sel, egui::Button::new("⬅")).on_hover_text("Izquierda").clicked() {
+                act = Some(ArrangeAct::Align(0, -1));
+            }
+            if ui.add_enabled(multi_sel, egui::Button::new("⬌")).on_hover_text("Centro X").clicked() {
+                act = Some(ArrangeAct::Align(0, 0));
+            }
+            if ui.add_enabled(multi_sel, egui::Button::new("➡")).on_hover_text("Derecha").clicked() {
+                act = Some(ArrangeAct::Align(0, 1));
+            }
+            if ui.add_enabled(multi_sel, egui::Button::new("⬆")).on_hover_text("Arriba").clicked() {
+                act = Some(ArrangeAct::Align(1, -1));
+            }
+            if ui.add_enabled(multi_sel, egui::Button::new("⬍")).on_hover_text("Centro Y").clicked() {
+                act = Some(ArrangeAct::Align(1, 0));
+            }
+            if ui.add_enabled(multi_sel, egui::Button::new("⬇")).on_hover_text("Abajo").clicked() {
+                act = Some(ArrangeAct::Align(1, 1));
+            }
+        });
+        let multi3 = self.selected_indices().len() >= 3;
+        ui.horizontal(|ui| {
+            ui.label("Distribuir:");
+            if ui.add_enabled(multi3, egui::Button::new("↔ H")).on_hover_text("Espaciado horizontal uniforme").clicked() {
+                act = Some(ArrangeAct::Distribute(0));
+            }
+            if ui.add_enabled(multi3, egui::Button::new("↕ V")).on_hover_text("Espaciado vertical uniforme").clicked() {
+                act = Some(ArrangeAct::Distribute(1));
+            }
+            if ui.button("▦ Matriz…").on_hover_text("Duplicar en rejilla o círculo").clicked() {
+                act = Some(ArrangeAct::OpenArray);
+            }
+        });
+
+        ui.separator();
         ui.horizontal(|ui| {
             if ui.button("⧉ Duplicar").clicked() {
                 do_dup = true;
@@ -1287,6 +1954,17 @@ impl RustburnApp {
                 do_delete = true;
             }
         });
+        match act {
+            Some(ArrangeAct::Group) => self.group_selected(),
+            Some(ArrangeAct::Ungroup) => self.ungroup_selected(),
+            Some(ArrangeAct::MirrorH) => self.mirror_selected(true),
+            Some(ArrangeAct::MirrorV) => self.mirror_selected(false),
+            Some(ArrangeAct::Rotate90) => self.rotate90_selected(),
+            Some(ArrangeAct::Align(ax, md)) => self.align_selected(ax, md),
+            Some(ArrangeAct::Distribute(ax)) => self.distribute_selected(ax),
+            Some(ArrangeAct::OpenArray) => self.show_array = true,
+            None => {}
+        }
         if do_dup {
             self.duplicate_selected();
         }
@@ -1410,6 +2088,34 @@ impl RustburnApp {
         });
 
         ui.add_space(6.0);
+        ui.separator();
+        ui.label(egui::RichText::new("Salida del trabajo").strong());
+        ui.checkbox(&mut self.cut_selected, "Cortar solo gráficos seleccionados");
+        ui.checkbox(&mut self.use_job_origin, "Usar origen de la pieza (coords. relativas)");
+        ui.horizontal(|ui| {
+            ui.label("Origen del trabajo:");
+            ui.add_enabled_ui(self.use_job_origin, |ui| {
+                egui::Grid::new("job_origin_grid").spacing([2.0, 2.0]).show(ui, |ui| {
+                    for row in 0u8..3 {
+                        for col in 0u8..3 {
+                            let sel = self.job_origin == (col, row);
+                            let lbl = if sel { "◉" } else { "○" };
+                            if ui.selectable_label(sel, lbl).clicked() {
+                                self.job_origin = (col, row);
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+            if self.use_job_origin {
+                if let Some(p) = self.job_origin_point() {
+                    ui.weak(format!("({:.1}, {:.1})", p.x, p.y));
+                }
+            }
+        });
+
+        ui.add_space(6.0);
         ui.label("Encuadre (framing)");
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.frame_power).range(0.0..=100.0).prefix("P ").suffix(" %"));
@@ -1502,6 +2208,7 @@ impl RustburnApp {
             (Tool::Polygon, "⬡ Polígono"),
             (Tool::Polyline, "📈 Polilínea"),
             (Tool::Text, "🅣 Texto"),
+            (Tool::Measure, "📏 Medir"),
         ];
         for (t, label) in tools {
             if ui
@@ -1544,7 +2251,39 @@ impl RustburnApp {
                             .suffix(" mm"),
                     );
                 });
-                ui.weak("Clic en el lienzo para colocarlo.");
+                ui.separator();
+                ui.checkbox(&mut self.num_series, "Numeración / texto variable (serie)");
+                if self.num_series {
+                    ui.weak("Usa # como hueco del número (p.ej. 'Pieza ###').");
+                    egui::Grid::new("num_series").num_columns(2).show(ui, |ui| {
+                        ui.label("Desde");
+                        ui.add(egui::DragValue::new(&mut self.num_start));
+                        ui.end_row();
+                        ui.label("Cantidad");
+                        ui.add(egui::DragValue::new(&mut self.num_count).range(1..=999));
+                        ui.end_row();
+                        ui.label("Incremento");
+                        ui.add(egui::DragValue::new(&mut self.num_step).range(-999..=999));
+                        ui.end_row();
+                        ui.label("Separación (mm)");
+                        ui.add(egui::DragValue::new(&mut self.num_spacing).range(1.0..=500.0).speed(0.5));
+                        ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Disposición:");
+                        ui.selectable_value(&mut self.num_horizontal, false, "Vertical");
+                        ui.selectable_value(&mut self.num_horizontal, true, "Horizontal");
+                    });
+                    let last = self.num_start + self.num_step * (self.num_count.max(1) as i64 - 1);
+                    ui.weak(format!(
+                        "Ej.: «{}» … «{}»",
+                        Self::expand_template(&self.text_content, self.num_start),
+                        Self::expand_template(&self.text_content, last)
+                    ));
+                    ui.weak("Clic en el lienzo coloca toda la serie.");
+                } else {
+                    ui.weak("Clic en el lienzo para colocarlo.");
+                }
             }
             Tool::Node => {
                 ui.weak(
@@ -1574,7 +2313,10 @@ impl RustburnApp {
             if ui.button("∩ Intersecar").clicked() {
                 self.boolean_selected(crate::geom_ops::BoolOp::Intersect);
             }
-            if ui.button("⊕ Soldar").clicked() {
+            if ui.button("⊕ Soldar")
+                .on_hover_text("Funde contornos solapados en uno (ideal para soldar letras de texto cursivo)")
+                .clicked()
+            {
                 self.weld_selected();
             }
         });
@@ -1778,22 +2520,67 @@ impl RustburnApp {
             .add_filter("Imagen", &["png", "jpg", "jpeg", "bmp"])
             .pick_file()
         {
-            match image::open(&path) {
-                Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = (rgba.width() as usize, rgba.height() as usize);
-                    let buf = rgba.into_raw();
-                    let ci = egui::ColorImage::from_rgba_unmultiplied([w, h], &buf);
-                    self.cam_raw_tex =
-                        Some(ctx.load_texture("cam_raw", ci, egui::TextureOptions::LINEAR));
-                    self.cam_photo = Some((buf, w, h));
-                    self.cam_tex = None;
-                    self.cal_points.clear();
-                    self.status_msg = "Foto cargada. Pulsa Calibrar.".into();
-                }
+            match self.set_cam_photo(&path, ctx) {
+                Ok(_) => self.status_msg = "Foto cargada. Pulsa Calibrar.".into(),
                 Err(e) => self.status_msg = format!("Error foto: {e}"),
             }
         }
+    }
+
+    /// Grab a single frame from the V4L2 device via ffmpeg, then load it as the
+    /// board photo for perspective calibration.
+    fn capture_cam_frame(&mut self, ctx: &egui::Context) {
+        let dev = self.cam_device.trim().to_string();
+        if dev.is_empty() {
+            self.status_msg = "Indica el dispositivo (p.ej. /dev/video0)".into();
+            return;
+        }
+        let out = std::env::temp_dir().join(format!(
+            "rustburn_cam_{}.png",
+            std::process::id()
+        ));
+        // -f v4l2 reads the webcam; -frames:v 1 grabs one frame; -y overwrites.
+        let result = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "v4l2", "-i"])
+            .arg(&dev)
+            .args(["-frames:v", "1", "-y"])
+            .arg(&out)
+            .output();
+        match result {
+            Ok(o) if o.status.success() && out.exists() => match self.set_cam_photo(&out, ctx) {
+                Ok((w, h)) => {
+                    self.status_msg = format!("Fotograma {w}×{h} capturado. Pulsa Calibrar.");
+                    let _ = std::fs::remove_file(&out);
+                }
+                Err(e) => self.status_msg = format!("Error al leer el fotograma: {e}"),
+            },
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                let first = err.lines().next().unwrap_or("fallo de ffmpeg");
+                self.status_msg = format!("Cámara: {first}");
+            }
+            Err(e) => {
+                self.status_msg = format!("No se pudo ejecutar ffmpeg ({e}). Instálalo para captura en vivo.");
+            }
+        }
+    }
+
+    /// Load an image file as the board photo; returns (width, height) in pixels.
+    fn set_cam_photo(
+        &mut self,
+        path: &std::path::Path,
+        ctx: &egui::Context,
+    ) -> Result<(usize, usize), String> {
+        let img = image::open(path).map_err(|e| e.to_string())?;
+        let rgba = img.to_rgba8();
+        let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+        let buf = rgba.into_raw();
+        let ci = egui::ColorImage::from_rgba_unmultiplied([w, h], &buf);
+        self.cam_raw_tex = Some(ctx.load_texture("cam_raw", ci, egui::TextureOptions::LINEAR));
+        self.cam_photo = Some((buf, w, h));
+        self.cam_tex = None;
+        self.cal_points.clear();
+        Ok((w, h))
     }
 
     fn compute_calibration(&mut self, ctx: &egui::Context) {
@@ -1849,6 +2636,10 @@ impl RustburnApp {
     }
 
     fn place_text(&mut self, at: Vec2) {
+        if self.num_series {
+            self.create_number_series(at);
+            return;
+        }
         let content = self.text_content.clone();
         if content.trim().is_empty() {
             self.status_msg = "Texto vacío".into();
@@ -1858,6 +2649,70 @@ impl RustburnApp {
             Some(pls) => self.add_vector(pls, at, "texto"),
             None => self.status_msg = "No se encontró una fuente utilizable".into(),
         }
+    }
+
+    /// Expand the template, replacing the first run of `#` with `n` zero-padded
+    /// to the run length (min 1). With no `#`, the number is appended.
+    pub(crate) fn expand_template(template: &str, n: i64) -> String {
+        if let Some(start) = template.find('#') {
+            let run = template[start..].chars().take_while(|&c| c == '#').count();
+            let num = if n < 0 {
+                format!("-{:0>width$}", -n, width = run)
+            } else {
+                format!("{:0>width$}", n, width = run)
+            };
+            let mut s = String::with_capacity(template.len() + num.len());
+            s.push_str(&template[..start]);
+            s.push_str(&num);
+            s.push_str(&template[start + run..]);
+            s
+        } else if template.trim().is_empty() {
+            n.to_string()
+        } else {
+            format!("{template}{n}")
+        }
+    }
+
+    /// Create a sequence of numbered text objects from the template in
+    /// `text_content` (use `#`/`###` as the number placeholder).
+    fn create_number_series(&mut self, at: Vec2) {
+        let count = self.num_count.max(1);
+        let template = self.text_content.clone();
+        self.snapshot();
+        let layer = self.selected_layer().min(self.doc.layers.len().saturating_sub(1));
+        let mut made = 0usize;
+        let mut first_idx = None;
+        for k in 0..count {
+            let n = self.num_start + self.num_step * k as i64;
+            let label = Self::expand_template(&template, n);
+            if label.trim().is_empty() {
+                continue;
+            }
+            let Some(pls) = crate::text::text_to_polylines(&self.fontdb, &label, self.text_height)
+            else {
+                self.status_msg = "No se encontró una fuente utilizable".into();
+                return;
+            };
+            let pos = if self.num_horizontal {
+                Vec2::new(at.x + k as f64 * self.num_spacing, at.y)
+            } else {
+                Vec2::new(at.x, at.y + k as f64 * self.num_spacing)
+            };
+            let id = self.doc.alloc_id();
+            let obj = Object::new(
+                id,
+                format!("nº {n}"),
+                layer,
+                ObjectKind::Vector(crate::model::VectorData { polylines: pls }),
+                pos,
+            );
+            let idx = self.doc.add_object(obj);
+            first_idx.get_or_insert(idx);
+            made += 1;
+        }
+        self.doc.selected = first_idx;
+        self.multi.clear();
+        self.status_msg = format!("Serie creada: {made} etiqueta(s)");
     }
 
     fn maybe_snap(&self, p: Vec2) -> Vec2 {
@@ -1914,6 +2769,23 @@ impl RustburnApp {
             return;
         }
 
+        if self.tool == Tool::Measure {
+            // Two clicks drop the two endpoints; a third starts over.
+            if response.clicked() {
+                if let Some(p) = response.interact_pointer_pos() {
+                    let w = self.maybe_snap(self.view.s2w(origin, p));
+                    if self.measure_a.is_none() || self.measure_b.is_some() {
+                        self.measure_a = Some(w);
+                        self.measure_b = None;
+                    } else {
+                        self.measure_b = Some(w);
+                    }
+                }
+            }
+            self.draw_scene(ui, &painter, origin);
+            return;
+        }
+
         if self.tool == Tool::Select {
             // Begin a gesture (move / scale / rotate / pan) on drag start.
             if response.drag_started() {
@@ -1942,9 +2814,11 @@ impl RustburnApp {
                                 self.multi.push(i);
                             }
                         }
+                    } else if let Some(h) = hit {
+                        self.select_with_group(h);
                     } else {
                         self.multi.clear();
-                        self.doc.selected = hit;
+                        self.doc.selected = None;
                     }
                 }
             }
@@ -2073,6 +2947,7 @@ impl RustburnApp {
                             obj: sel,
                             start_pos: pos,
                             ptr_start: pw,
+                            group: self.group_drag_members(sel),
                         });
                     }
                 }
@@ -2085,12 +2960,13 @@ impl RustburnApp {
 
         if let Some(i) = self.hit_test(origin, ps) {
             let start_pos = self.doc.objects[i].pos;
-            self.doc.selected = Some(i);
+            self.select_with_group(i);
             self.snapshot();
             return Gesture::Move {
                 obj: i,
                 start_pos,
                 ptr_start: pw,
+                group: self.group_drag_members(i),
             };
         }
         Gesture::Pan
@@ -2104,6 +2980,7 @@ impl RustburnApp {
                 obj,
                 start_pos,
                 ptr_start,
+                ref group,
             } => {
                 let (snap, step) = (self.snap, self.snap_step);
                 if let (Some(pw), Some(o)) = (pw_opt, self.doc.objects.get_mut(obj)) {
@@ -2116,6 +2993,14 @@ impl RustburnApp {
                         np.y = (np.y / step).round() * step;
                     }
                     o.pos = np;
+                    // Apply the same net translation to every other group member.
+                    let d = Vec2::new(np.x - start_pos.x, np.y - start_pos.y);
+                    let members = group.clone();
+                    for (gi, gstart) in members {
+                        if let Some(go) = self.doc.objects.get_mut(gi) {
+                            go.pos = Vec2::new(gstart.x + d.x, gstart.y + d.y);
+                        }
+                    }
                 }
             }
             Gesture::Scale {
@@ -2290,7 +3175,7 @@ impl RustburnApp {
                     }
                 }
             }
-            Tool::Select => {}
+            Tool::Select | Tool::Measure => {}
         }
     }
 
@@ -2625,10 +3510,37 @@ impl RustburnApp {
                 }
             }
         }
+        // Measurement overlay (measure tool).
+        if let Some(a) = self.measure_a {
+            let cc = Color32::from_rgb(255, 210, 40);
+            let sa = self.view.w2s(origin, a);
+            let end = self.measure_b.or(self.cursor_world);
+            if let Some(b) = end {
+                let sb = self.view.w2s(origin, b);
+                painter.line_segment([sa, sb], Stroke::new(1.5_f32, cc));
+                painter.circle_filled(sa, 3.0, cc);
+                painter.circle_filled(sb, 3.0, cc);
+                let (dx, dy) = (b.x - a.x, b.y - a.y);
+                let dist = (dx * dx + dy * dy).sqrt();
+                let ang = (-dy).atan2(dx).to_degrees();
+                let mid = Pos2::new((sa.x + sb.x) / 2.0, (sa.y + sb.y) / 2.0);
+                let txt = format!("{:.2} mm  Δ{:.1},{:.1}  {:.1}°", dist, dx, dy, ang);
+                painter.text(
+                    mid + egui::vec2(6.0, -6.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    txt,
+                    egui::FontId::proportional(12.0),
+                    cc,
+                );
+            } else {
+                painter.circle_filled(sa, 3.0, cc);
+            }
+        }
+
         self.draw_rulers(painter, origin);
     }
 
-    /// Draw mm rulers along the top and left edges of the canvas, tied to the grid.
+    /// Draw mm rulers along all four edges of the canvas, tied to the grid.
     fn draw_rulers(&self, painter: &egui::Painter, origin: Pos2) {
         let area = painter.clip_rect();
         let m = &self.doc.machine;
@@ -2639,11 +3551,15 @@ impl RustburnApp {
         let tick = Color32::from_gray(95);
         let font = egui::FontId::proportional(10.0);
 
-        // Backgrounds for the two ruler strips + corner.
-        let top = Rect::from_min_max(area.min, Pos2::new(area.max.x, area.min.y + R));
-        let left = Rect::from_min_max(area.min, Pos2::new(area.min.x + R, area.max.y));
-        painter.rect_filled(top, 0.0, bg);
-        painter.rect_filled(left, 0.0, bg);
+        // Inner edges of the four ruler strips.
+        let (x0, x1) = (area.min.x + R, area.max.x - R); // horizontal content span
+        let (y0, y1) = (area.min.y + R, area.max.y - R); // vertical content span
+
+        // Backgrounds for the four ruler strips.
+        painter.rect_filled(Rect::from_min_max(area.min, Pos2::new(area.max.x, y0)), 0.0, bg); // top
+        painter.rect_filled(Rect::from_min_max(Pos2::new(area.min.x, y1), area.max), 0.0, bg); // bottom
+        painter.rect_filled(Rect::from_min_max(area.min, Pos2::new(x0, area.max.y)), 0.0, bg); // left
+        painter.rect_filled(Rect::from_min_max(Pos2::new(x1, area.min.y), area.max), 0.0, bg); // right
 
         // Pick a label step so labels are ~>=48px apart; minor ticks at 1/5 of it.
         let steps = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0];
@@ -2656,84 +3572,78 @@ impl RustburnApp {
         }
         let minor = if label_step >= 5.0 { label_step / 5.0 } else { label_step };
 
-        // Horizontal ruler ticks + labels.
+        // Horizontal ruler ticks + labels (top and bottom).
         let mut x = 0.0;
         while x <= m.bed_w_mm + 1e-6 {
             let sx = self.view.w2s(origin, Vec2::new(x, 0.0)).x;
-            if sx >= area.min.x + R && sx <= area.max.x {
+            if sx >= x0 && sx <= x1 {
                 let major = (x % label_step).abs() < 1e-6;
                 let h = if major { R * 0.5 } else { R * 0.28 };
                 painter.line_segment(
-                    [Pos2::new(sx, area.min.y + R - h), Pos2::new(sx, area.min.y + R)],
+                    [Pos2::new(sx, y0 - h), Pos2::new(sx, y0)],
+                    Stroke::new(1.0_f32, tick),
+                );
+                painter.line_segment(
+                    [Pos2::new(sx, y1), Pos2::new(sx, y1 + h)],
                     Stroke::new(1.0_f32, tick),
                 );
                 if major {
-                    painter.text(
-                        Pos2::new(sx + 2.0, area.min.y + 1.0),
-                        egui::Align2::LEFT_TOP,
-                        format!("{}", x as i32),
-                        font.clone(),
-                        fg,
-                    );
+                    let label = format!("{}", x as i32);
+                    painter.text(Pos2::new(sx + 2.0, area.min.y + 1.0), egui::Align2::LEFT_TOP, &label, font.clone(), fg);
+                    painter.text(Pos2::new(sx + 2.0, area.max.y - 1.0), egui::Align2::LEFT_BOTTOM, &label, font.clone(), fg);
                 }
             }
             x += minor;
         }
 
-        // Vertical ruler ticks + labels.
+        // Vertical ruler ticks + labels (left and right).
         let mut y = 0.0;
         while y <= m.bed_h_mm + 1e-6 {
             let sy = self.view.w2s(origin, Vec2::new(0.0, y)).y;
-            if sy >= area.min.y + R && sy <= area.max.y {
+            if sy >= y0 && sy <= y1 {
                 let major = (y % label_step).abs() < 1e-6;
                 let w = if major { R * 0.5 } else { R * 0.28 };
                 painter.line_segment(
-                    [Pos2::new(area.min.x + R - w, sy), Pos2::new(area.min.x + R, sy)],
+                    [Pos2::new(x0 - w, sy), Pos2::new(x0, sy)],
+                    Stroke::new(1.0_f32, tick),
+                );
+                painter.line_segment(
+                    [Pos2::new(x1, sy), Pos2::new(x1 + w, sy)],
                     Stroke::new(1.0_f32, tick),
                 );
                 if major {
-                    painter.text(
-                        Pos2::new(area.min.x + 1.0, sy + 1.0),
-                        egui::Align2::LEFT_TOP,
-                        format!("{}", y as i32),
-                        font.clone(),
-                        fg,
-                    );
+                    let label = format!("{}", y as i32);
+                    painter.text(Pos2::new(area.min.x + 1.0, sy + 1.0), egui::Align2::LEFT_TOP, &label, font.clone(), fg);
+                    painter.text(Pos2::new(area.max.x - 1.0, sy + 1.0), egui::Align2::RIGHT_TOP, &label, font.clone(), fg);
                 }
             }
             y += minor;
         }
 
-        // Corner label.
-        painter.rect_filled(
-            Rect::from_min_max(area.min, Pos2::new(area.min.x + R, area.min.y + R)),
-            0.0,
-            bg,
-        );
-        painter.text(
-            area.min + egui::vec2(3.0, 3.0),
-            egui::Align2::LEFT_TOP,
-            "mm",
-            egui::FontId::proportional(9.0),
-            fg,
-        );
+        // Corner labels (all four corners).
+        let unit = egui::FontId::proportional(9.0);
+        for (cmin, cmax, align, anchor) in [
+            (area.min, Pos2::new(x0, y0), egui::Align2::LEFT_TOP, area.min + egui::vec2(3.0, 3.0)),
+            (Pos2::new(x1, area.min.y), Pos2::new(area.max.x, y0), egui::Align2::RIGHT_TOP, Pos2::new(area.max.x - 3.0, area.min.y + 3.0)),
+            (Pos2::new(area.min.x, y1), Pos2::new(x0, area.max.y), egui::Align2::LEFT_BOTTOM, Pos2::new(area.min.x + 3.0, area.max.y - 3.0)),
+            (Pos2::new(x1, y1), area.max, egui::Align2::RIGHT_BOTTOM, Pos2::new(area.max.x - 3.0, area.max.y - 3.0)),
+        ] {
+            painter.rect_filled(Rect::from_min_max(cmin, cmax), 0.0, bg);
+            painter.text(anchor, align, "mm", unit.clone(), fg);
+        }
 
-        // Cursor position indicators on both rulers.
+        // Cursor position indicators on all four rulers.
         if let Some(cw) = self.cursor_world {
             let cc = Color32::from_rgb(255, 180, 40);
             let sx = self.view.w2s(origin, Vec2::new(cw.x, 0.0)).x;
             let sy = self.view.w2s(origin, Vec2::new(0.0, cw.y)).y;
-            if sx >= area.min.x + R && sx <= area.max.x {
-                painter.line_segment(
-                    [Pos2::new(sx, area.min.y), Pos2::new(sx, area.min.y + R)],
-                    Stroke::new(1.5_f32, cc),
-                );
+            if sx >= x0 && sx <= x1 {
+                painter.line_segment([Pos2::new(sx, area.min.y), Pos2::new(sx, y0)], Stroke::new(1.5_f32, cc));
+                painter.line_segment([Pos2::new(sx, y1), Pos2::new(sx, area.max.y)], Stroke::new(1.5_f32, cc));
             }
-            if sy >= area.min.y + R && sy <= area.max.y {
-                painter.line_segment(
-                    [Pos2::new(area.min.x, sy), Pos2::new(area.min.x + R, sy)],
-                    Stroke::new(1.5_f32, cc),
-                );
+            if sy >= y0 && sy <= y1 {
+                painter.line_segment([Pos2::new(area.min.x, sy), Pos2::new(x0, sy)], Stroke::new(1.5_f32, cc));
+                painter.line_segment([Pos2::new(x1, sy), Pos2::new(area.max.x, sy)], Stroke::new(1.5_f32, cc));
             }
         }
     }

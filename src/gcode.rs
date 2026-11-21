@@ -16,12 +16,25 @@ pub struct GcodeStats {
     pub objects_out: usize,
 }
 
-/// Map a document-space point to machine coordinates, honouring the origin setting.
-fn to_machine(p: Vec2, m: &MachineSettings) -> Vec2 {
-    match m.origin {
+/// Map a document-space point to machine coordinates, honouring the origin
+/// setting, then subtract `off` (a machine-space offset for a relative job
+/// origin; pass `Vec2::new(0.0, 0.0)` for absolute output).
+fn to_machine(p: Vec2, m: &MachineSettings, off: Vec2) -> Vec2 {
+    let mapped = match m.origin {
         Origin::FrontLeft => Vec2::new(p.x, m.bed_h_mm - p.y),
         Origin::TopLeft => p,
-    }
+    };
+    Vec2::new(mapped.x - off.x, mapped.y - off.y)
+}
+
+/// Options controlling a generation pass.
+#[derive(Clone, Default)]
+pub struct GenOptions {
+    /// When `Some`, only objects whose id is listed are emitted.
+    pub only_ids: Option<Vec<u64>>,
+    /// When `Some(anchor)`, output is shifted so this document-space point maps
+    /// to machine (0,0) — "start from job origin" / relative coordinates.
+    pub relative_anchor: Option<Vec2>,
 }
 
 fn fmt(v: f64) -> String {
@@ -38,11 +51,26 @@ fn fmt(v: f64) -> String {
     s
 }
 
-/// Generate a full G-code program for the document.
+/// Generate a full G-code program for the document (absolute, all objects).
 pub fn generate(doc: &Document) -> GcodeJob {
+    generate_with(doc, &GenOptions::default())
+}
+
+/// Generate a G-code program honouring `opts` (object filter, relative origin).
+pub fn generate_with(doc: &Document, opts: &GenOptions) -> GcodeJob {
     let m = &doc.machine;
     let mut out: Vec<String> = Vec::new();
     let mut stats = GcodeStats::default();
+
+    // Machine-space offset for a relative job origin.
+    let off = match opts.relative_anchor {
+        Some(a) => to_machine(a, m, Vec2::new(0.0, 0.0)),
+        None => Vec2::new(0.0, 0.0),
+    };
+    let included = |o: &crate::model::Object| match &opts.only_ids {
+        Some(ids) => ids.contains(&o.id),
+        None => true,
+    };
 
     out.push("; rustburn G-code (GRBL laser)".into());
     out.push(format!(
@@ -61,8 +89,11 @@ pub fn generate(doc: &Document) -> GcodeJob {
         if !layer.output || !layer.visible {
             continue;
         }
-        let objs: Vec<&crate::model::Object> =
-            doc.objects.iter().filter(|o| o.layer == li).collect();
+        let objs: Vec<&crate::model::Object> = doc
+            .objects
+            .iter()
+            .filter(|o| o.layer == li && included(o))
+            .collect();
         if objs.is_empty() {
             continue;
         }
@@ -82,7 +113,7 @@ pub fn generate(doc: &Document) -> GcodeJob {
                         let mp = pl
                             .points
                             .iter()
-                            .map(|p| to_machine(mat.apply(*p), m))
+                            .map(|p| to_machine(mat.apply(*p), m, off))
                             .collect::<Vec<_>>();
                         paths.push((mp, pl.closed));
                     }
@@ -90,7 +121,7 @@ pub fn generate(doc: &Document) -> GcodeJob {
                     stats.objects_out += 1;
                 }
                 (ObjectKind::Image(_), CutMode::Image) => {
-                    emit_raster(&mut out, doc, obj, layer);
+                    emit_raster(&mut out, doc, obj, layer, off);
                     emitted = true;
                     stats.objects_out += 1;
                 }
@@ -201,6 +232,7 @@ fn emit_raster(
     doc: &Document,
     obj: &crate::model::Object,
     layer: &crate::model::Layer,
+    off: Vec2,
 ) {
     let m = &doc.machine;
     let s = &layer.settings;
@@ -233,7 +265,7 @@ fn emit_raster(
 
     // local-space helper: cell (rx, ry) -> local mm, then to machine.
     let mat = obj.matrix();
-    let local = |x_mm: f64, y_mm: f64| to_machine(mat.apply(Vec2::new(x_mm, y_mm)), m);
+    let local = |x_mm: f64, y_mm: f64| to_machine(mat.apply(Vec2::new(x_mm, y_mm)), m, off);
 
     for ry in 0..rows {
         let y_mm = (ry as f64 + 0.5) * interval;
@@ -368,8 +400,8 @@ pub fn material_test(m: &MachineSettings, t: &MaterialTest) -> Vec<String> {
                 } else {
                     (x0 + t.cell_mm, x0)
                 };
-                let pa = to_machine(Vec2::new(xa, y), m);
-                let pb = to_machine(Vec2::new(xb, y), m);
+                let pa = to_machine(Vec2::new(xa, y), m, Vec2::new(0.0, 0.0));
+                let pb = to_machine(Vec2::new(xb, y), m, Vec2::new(0.0, 0.0));
                 out.push(format!("G0 X{} Y{} S0", fmt(pa.x), fmt(pa.y)));
                 out.push(format!(
                     "G1 X{} Y{} F{} S{}",
@@ -490,7 +522,7 @@ pub fn frame(doc: &Document, power_pct: f64, speed: f64) -> Option<Vec<String>> 
         Vec2::new(bb.min.x, bb.max.y),
         Vec2::new(bb.min.x, bb.min.y),
     ]
-    .map(|p| to_machine(p, m));
+    .map(|p| to_machine(p, m, Vec2::new(0.0, 0.0)));
 
     let power = (power_pct / 100.0 * m.s_max).round();
     let mut out = vec![
