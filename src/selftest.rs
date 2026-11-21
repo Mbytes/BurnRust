@@ -298,6 +298,37 @@ pub fn run() {
     assert_eq!(RustburnApp::expand_template("##", -3), "-03");
     println!("Numeración: plantillas de texto variable OK");
 
+    // Clip-to-bed: a shape poking outside the bed is cropped to it.
+    {
+        use crate::geometry::Polyline;
+        use crate::geom_ops::{boolean, BoolOp};
+        let bed = vec![Polyline {
+            points: vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(100.0, 0.0),
+                Vec2::new(100.0, 100.0),
+                Vec2::new(0.0, 100.0),
+            ],
+            closed: true,
+        }];
+        let shape = vec![Polyline {
+            points: vec![
+                Vec2::new(50.0, 50.0),
+                Vec2::new(150.0, 50.0),
+                Vec2::new(150.0, 150.0),
+                Vec2::new(50.0, 150.0),
+            ],
+            closed: true,
+        }];
+        let clipped = boolean(&shape, &bed, BoolOp::Intersect);
+        assert!(!clipped.is_empty(), "el recorte a la cama quedó vacío");
+        let inside = clipped.iter().flat_map(|p| p.points.iter()).all(|p| {
+            p.x >= -0.5 && p.x <= 100.5 && p.y >= -0.5 && p.y <= 100.5
+        });
+        assert!(inside, "el recorte dejó puntos fuera de la cama");
+        println!("Recorte a la cama: geometría contenida OK");
+    }
+
     // Generation options: object filter + relative job origin.
     {
         use crate::gcode::{generate_with, GenOptions};

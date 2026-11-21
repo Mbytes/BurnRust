@@ -204,6 +204,13 @@ pub struct RustburnApp {
     gcode_msg: String,
     toolpath: Option<Toolpath>,
     show_toolpath: bool,
+    // toolpath animation
+    sim_playing: bool,
+    sim_pos_mm: f64,
+    sim_speed: f64, // mm/s of simulated head travel
+    // snapping to other objects / bed guides
+    snap_objects: bool,
+    snap_guides: Vec<(Vec2, Vec2)>,
 
     // framing
     frame_power: f64,
@@ -307,6 +314,11 @@ impl RustburnApp {
             gcode_msg: String::new(),
             toolpath: None,
             show_toolpath: true,
+            sim_playing: false,
+            sim_pos_mm: 0.0,
+            sim_speed: 1500.0,
+            snap_objects: true,
+            snap_guides: Vec::new(),
             frame_power: 1.0,
             frame_speed: 3000.0,
             console: vec!["rustburn listo. Conéctate a la Phecda para empezar.".into()],
@@ -712,6 +724,66 @@ impl RustburnApp {
         acc
     }
 
+    /// Snap the moved object's position `np` so one of its edges/centre lines up
+    /// with another object's edge/centre or a bed guide. Returns the adjusted
+    /// position and any guide lines to draw (document space).
+    fn snap_to_objects(&self, obj: usize, np: Vec2) -> (Vec2, Vec<(Vec2, Vec2)>) {
+        let mut guides = Vec::new();
+        let Some(o) = self.doc.objects.get(obj) else { return (np, guides) };
+        let Some(bb) = o.bbox() else { return (np, guides) };
+        // Anchor offsets relative to pos (invariant under translation).
+        let ox = [bb.min.x - o.pos.x, (bb.min.x + bb.max.x) / 2.0 - o.pos.x, bb.max.x - o.pos.x];
+        let oy = [bb.min.y - o.pos.y, (bb.min.y + bb.max.y) / 2.0 - o.pos.y, bb.max.y - o.pos.y];
+
+        let bw = self.doc.machine.bed_w_mm;
+        let bh = self.doc.machine.bed_h_mm;
+        let skip = self.group_members(obj);
+        // Candidate target lines from other objects + the bed.
+        let mut tx: Vec<f64> = vec![0.0, bw / 2.0, bw];
+        let mut ty: Vec<f64> = vec![0.0, bh / 2.0, bh];
+        for (i, other) in self.doc.objects.iter().enumerate() {
+            if skip.contains(&i) {
+                continue;
+            }
+            if let Some(ob) = other.bbox() {
+                tx.extend_from_slice(&[ob.min.x, (ob.min.x + ob.max.x) / 2.0, ob.max.x]);
+                ty.extend_from_slice(&[ob.min.y, (ob.min.y + ob.max.y) / 2.0, ob.max.y]);
+            }
+        }
+        let thresh = (6.0 / self.view.zoom as f64).max(0.1);
+
+        let mut best_x: Option<(f64, f64)> = None; // (delta_to_apply, target_line)
+        for &a in &ox {
+            let anchor = np.x + a;
+            for &t in &tx {
+                let d = t - anchor;
+                if d.abs() <= thresh && best_x.map_or(true, |(bd, _)| d.abs() < bd.abs()) {
+                    best_x = Some((d, t));
+                }
+            }
+        }
+        let mut best_y: Option<(f64, f64)> = None;
+        for &a in &oy {
+            let anchor = np.y + a;
+            for &t in &ty {
+                let d = t - anchor;
+                if d.abs() <= thresh && best_y.map_or(true, |(bd, _)| d.abs() < bd.abs()) {
+                    best_y = Some((d, t));
+                }
+            }
+        }
+        let mut res = np;
+        if let Some((d, t)) = best_x {
+            res.x += d;
+            guides.push((Vec2::new(t, 0.0), Vec2::new(t, bh)));
+        }
+        if let Some((d, t)) = best_y {
+            res.y += d;
+            guides.push((Vec2::new(0.0, t), Vec2::new(bw, t)));
+        }
+        (res, guides)
+    }
+
     /// Align the selection. `axis` 0 = horizontal (X), 1 = vertical (Y);
     /// `mode` -1 = min edge, 0 = centre, 1 = max edge.
     fn align_selected(&mut self, axis: u8, mode: i8) {
@@ -922,6 +994,53 @@ impl RustburnApp {
         } else {
             self.toolpath = Some(crate::gcode::analyze(&self.gcode, &self.doc.machine));
         }
+        self.sim_pos_mm = 0.0;
+        self.sim_playing = false;
+    }
+
+    /// Total path length (cut + travel) of the current toolpath, in mm.
+    fn sim_total_mm(&self) -> f64 {
+        self.toolpath
+            .as_ref()
+            .map(|t| t.cut_mm + t.travel_mm)
+            .unwrap_or(0.0)
+    }
+
+    /// Advance the simulation head by `dt` seconds while playing.
+    fn tick_simulation(&mut self, dt: f64) {
+        if !self.sim_playing {
+            return;
+        }
+        let total = self.sim_total_mm();
+        if total <= 0.0 {
+            self.sim_playing = false;
+            return;
+        }
+        self.sim_pos_mm += self.sim_speed * dt;
+        if self.sim_pos_mm >= total {
+            self.sim_pos_mm = total;
+            self.sim_playing = false;
+        }
+    }
+
+    /// Head position at the current simulated distance, plus whether it is
+    /// cutting (non-rapid) there.
+    fn sim_head(&self) -> Option<(Vec2, bool)> {
+        let tp = self.toolpath.as_ref()?;
+        let mut acc = 0.0;
+        for seg in &tp.segs {
+            let len = (seg.to.x - seg.from.x).hypot(seg.to.y - seg.from.y);
+            if acc + len >= self.sim_pos_mm || len < 1e-9 {
+                let t = if len < 1e-9 { 0.0 } else { (self.sim_pos_mm - acc) / len };
+                let p = Vec2::new(
+                    seg.from.x + (seg.to.x - seg.from.x) * t,
+                    seg.from.y + (seg.to.y - seg.from.y) * t,
+                );
+                return Some((p, !seg.rapid));
+            }
+            acc += len;
+        }
+        tp.segs.last().map(|s| (s.to, !s.rapid))
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -1162,6 +1281,14 @@ impl RustburnApp {
                     ui.label("• Shift+clic: añadir objetos a la selección.");
                     ui.add_space(6.0);
 
+                    ui.strong("Edición avanzada");
+                    ui.label("• Snap objetos: al mover, ajusta bordes/centros a otros objetos y a la cama.");
+                    ui.label("• Operaciones: Cerrar trazado, Recortar a la cama (clip).");
+                    ui.label("• Numeración/texto variable: plantilla con # (p.ej. 'Pieza ###').");
+                    ui.label("• Simulación del recorrido: ▶/⏸/⏮, barra de progreso y velocidad.");
+                    ui.label("• Cámara USB en vivo: captura un fotograma (ffmpeg) y calíbralo.");
+                    ui.add_space(6.0);
+
                     ui.strong("Capas y materiales");
                     ui.label("• Cada capa tiene modo (Línea/Imagen), potencia %, velocidad y pasadas.");
                     ui.label("• Materiales: presets aplicables a la capa del objeto seleccionado.");
@@ -1333,6 +1460,12 @@ impl eframe::App for RustburnApp {
         self.handle_shortcuts(ctx);
         // Keep polling the worker for live status.
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        // Advance the toolpath simulation.
+        if self.sim_playing {
+            let dt = ctx.input(|i| i.stable_dt).min(0.1) as f64;
+            self.tick_simulation(dt);
+            ctx.request_repaint();
+        }
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| self.toolbar_ui(ui));
         egui::SidePanel::right("right")
@@ -1446,6 +1579,36 @@ impl RustburnApp {
                 self.generate_gcode();
             }
             ui.toggle_value(&mut self.show_toolpath, "👁 Recorrido");
+            // Toolpath simulation controls.
+            {
+                let has_tp = self.toolpath.is_some();
+                let total = self.sim_total_mm();
+                let play_lbl = if self.sim_playing { "⏸" } else { "▶" };
+                if ui.add_enabled(has_tp, egui::Button::new(play_lbl))
+                    .on_hover_text("Simular recorrido")
+                    .clicked()
+                {
+                    if self.sim_pos_mm >= total {
+                        self.sim_pos_mm = 0.0;
+                    }
+                    self.sim_playing = !self.sim_playing;
+                    self.show_toolpath = true;
+                }
+                if ui.add_enabled(has_tp, egui::Button::new("⏮"))
+                    .on_hover_text("Reiniciar simulación")
+                    .clicked()
+                {
+                    self.sim_pos_mm = 0.0;
+                    self.sim_playing = false;
+                }
+                if has_tp && total > 0.0 {
+                    ui.add(egui::Slider::new(&mut self.sim_pos_mm, 0.0..=total).show_value(false))
+                        .on_hover_text("Progreso");
+                    ui.add(egui::DragValue::new(&mut self.sim_speed).range(50.0..=20000.0).suffix(" mm/s").speed(50.0))
+                        .on_hover_text("Velocidad de simulación");
+                    ui.weak(format!("{:.0}%", 100.0 * self.sim_pos_mm / total));
+                }
+            }
             ui.toggle_value(&mut self.show_mat_test, "🔥 Test material");
             ui.toggle_value(&mut self.show_grbl, "⚙ Ajustes GRBL");
             ui.toggle_value(&mut self.show_config, "🛠 Configuración");
@@ -1466,7 +1629,7 @@ impl RustburnApp {
                 }
             }
             ui.separator();
-            ui.toggle_value(&mut self.snap, "🧲 Snap");
+            ui.toggle_value(&mut self.snap, "🧲 Rejilla").on_hover_text("Ajustar a la cuadrícula");
             if self.snap {
                 ui.add(
                     egui::DragValue::new(&mut self.snap_step)
@@ -1475,6 +1638,8 @@ impl RustburnApp {
                         .suffix(" mm"),
                 );
             }
+            ui.toggle_value(&mut self.snap_objects, "🎯 Snap objetos")
+                .on_hover_text("Ajustar bordes/centros a otros objetos y a la cama");
             ui.separator();
             ui.label(egui::RichText::new(&self.status_msg).italics().weak());
         });
@@ -2331,6 +2496,20 @@ impl RustburnApp {
                 self.offset_selected(self.offset_dist);
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("⊏ Cerrar trazado")
+                .on_hover_text("Cierra los trazados abiertos del objeto seleccionado")
+                .clicked()
+            {
+                self.close_paths_selected();
+            }
+            if ui.button("✂ Recortar a la cama")
+                .on_hover_text("Elimina la geometría fuera del área de trabajo")
+                .clicked()
+            {
+                self.clip_to_bed();
+            }
+        });
     }
 
     /// Create a vector object from local polylines placed at `pos`, select it.
@@ -2353,6 +2532,70 @@ impl RustburnApp {
     }
 
     /// A vector object's polylines transformed into document (mm) coordinates.
+    /// Close every open polyline of the selected vector object(s).
+    fn close_paths_selected(&mut self) {
+        let idx = self.selected_indices();
+        if idx.is_empty() {
+            return;
+        }
+        let mut changed = 0;
+        self.snapshot();
+        for &i in &idx {
+            if let Some(o) = self.doc.objects.get_mut(i) {
+                if let ObjectKind::Vector(v) = &mut o.kind {
+                    for pl in &mut v.polylines {
+                        if !pl.closed && pl.points.len() >= 3 {
+                            pl.closed = true;
+                            changed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        self.status_msg = if changed > 0 {
+            format!("Cerrados {changed} trazado(s)")
+        } else {
+            "No hay trazados abiertos".into()
+        };
+    }
+
+    /// Clip the selected vector object(s) to the bed rectangle (drops anything
+    /// outside the work area).
+    fn clip_to_bed(&mut self) {
+        let idx = self.selected_indices();
+        if idx.is_empty() {
+            self.status_msg = "Selecciona un objeto".into();
+            return;
+        }
+        let (bw, bh) = (self.doc.machine.bed_w_mm, self.doc.machine.bed_h_mm);
+        let bed = vec![crate::geometry::Polyline {
+            points: vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(bw, 0.0),
+                Vec2::new(bw, bh),
+                Vec2::new(0.0, bh),
+            ],
+            closed: true,
+        }];
+        self.snapshot();
+        let mut clipped = 0;
+        for &i in &idx {
+            let pls = self.obj_doc_polylines(i);
+            if pls.is_empty() {
+                continue;
+            }
+            let result = crate::geom_ops::boolean(&pls, &bed, crate::geom_ops::BoolOp::Intersect);
+            if let Some(o) = self.doc.objects.get_mut(i) {
+                o.kind = ObjectKind::Vector(crate::model::VectorData { polylines: result });
+                o.pos = Vec2::new(0.0, 0.0);
+                o.rotation = 0.0;
+                o.scale = Vec2::new(1.0, 1.0);
+                clipped += 1;
+            }
+        }
+        self.status_msg = format!("Recortados {clipped} objeto(s) a la cama");
+    }
+
     fn obj_doc_polylines(&self, idx: usize) -> Vec<crate::geometry::Polyline> {
         let Some(o) = self.doc.objects.get(idx) else {
             return Vec::new();
@@ -2801,6 +3044,7 @@ impl RustburnApp {
             }
             if response.drag_stopped() {
                 self.gesture = Gesture::None;
+                self.snap_guides.clear();
             }
             if response.clicked() {
                 if let Some(p) = response.interact_pointer_pos() {
@@ -2982,8 +3226,10 @@ impl RustburnApp {
                 ptr_start,
                 ref group,
             } => {
+                let members = group.clone();
                 let (snap, step) = (self.snap, self.snap_step);
-                if let (Some(pw), Some(o)) = (pw_opt, self.doc.objects.get_mut(obj)) {
+                self.snap_guides.clear();
+                if let Some(pw) = pw_opt {
                     let mut np = Vec2::new(
                         start_pos.x + (pw.x - ptr_start.x),
                         start_pos.y + (pw.y - ptr_start.y),
@@ -2992,10 +3238,17 @@ impl RustburnApp {
                         np.x = (np.x / step).round() * step;
                         np.y = (np.y / step).round() * step;
                     }
-                    o.pos = np;
+                    // Snap edges/centres to other objects and bed guides.
+                    if self.snap_objects {
+                        let (snapped, guides) = self.snap_to_objects(obj, np);
+                        np = snapped;
+                        self.snap_guides = guides;
+                    }
+                    if let Some(o) = self.doc.objects.get_mut(obj) {
+                        o.pos = np;
+                    }
                     // Apply the same net translation to every other group member.
                     let d = Vec2::new(np.x - start_pos.x, np.y - start_pos.y);
-                    let members = group.clone();
                     for (gi, gstart) in members {
                         if let Some(go) = self.doc.objects.get_mut(gi) {
                             go.pos = Vec2::new(gstart.x + d.x, gstart.y + d.y);
@@ -3438,13 +3691,48 @@ impl RustburnApp {
             if let Some(tp) = &self.toolpath {
                 let cut_col = Color32::from_rgb(255, 140, 0);
                 let travel_col = Color32::from_rgba_unmultiplied(120, 200, 255, 90);
-                for seg in tp.segs.iter().take(40_000) {
+                // Dim colours for the not-yet-reached part during simulation.
+                let cut_dim = Color32::from_rgba_unmultiplied(255, 140, 0, 45);
+                let travel_dim = Color32::from_rgba_unmultiplied(120, 200, 255, 30);
+                let simulating = self.sim_playing || self.sim_pos_mm > 1e-6;
+                let mut acc = 0.0f64;
+                for seg in tp.segs.iter().take(60_000) {
                     let a = self.view.w2s(origin, seg.from);
                     let b = self.view.w2s(origin, seg.to);
-                    if seg.rapid {
-                        painter.line_segment([a, b], Stroke::new(0.7_f32, travel_col));
+                    let len = (seg.to.x - seg.from.x).hypot(seg.to.y - seg.from.y);
+                    // Fraction of this segment already traversed by the head.
+                    let done = if !simulating {
+                        1.0
+                    } else if acc >= self.sim_pos_mm {
+                        0.0
+                    } else if acc + len <= self.sim_pos_mm || len < 1e-9 {
+                        1.0
                     } else {
-                        painter.line_segment([a, b], Stroke::new(1.0_f32, cut_col));
+                        (self.sim_pos_mm - acc) / len
+                    };
+                    let (done_col, pend_col, w) = if seg.rapid {
+                        (travel_col, travel_dim, 0.7_f32)
+                    } else {
+                        (cut_col, cut_dim, 1.0_f32)
+                    };
+                    if done >= 1.0 {
+                        painter.line_segment([a, b], Stroke::new(w, done_col));
+                    } else if done <= 0.0 {
+                        painter.line_segment([a, b], Stroke::new(w, pend_col));
+                    } else {
+                        let mid = Pos2::new(a.x + (b.x - a.x) * done as f32, a.y + (b.y - a.y) * done as f32);
+                        painter.line_segment([a, mid], Stroke::new(w, done_col));
+                        painter.line_segment([mid, b], Stroke::new(w, pend_col));
+                    }
+                    acc += len;
+                }
+                // Head marker.
+                if simulating {
+                    if let Some((p, cutting)) = self.sim_head() {
+                        let hp = self.view.w2s(origin, p);
+                        let hc = if cutting { Color32::from_rgb(255, 60, 60) } else { Color32::from_rgb(120, 220, 255) };
+                        painter.circle_filled(hp, 5.0, hc);
+                        painter.circle_stroke(hp, 7.0, Stroke::new(1.5_f32, Color32::WHITE));
                     }
                 }
             }
@@ -3510,6 +3798,16 @@ impl RustburnApp {
                 }
             }
         }
+        // Snap guide lines (while dragging with object snapping).
+        if !self.snap_guides.is_empty() {
+            let gc = Color32::from_rgb(80, 220, 140);
+            for (a, b) in &self.snap_guides {
+                let sa = self.view.w2s(origin, *a);
+                let sb = self.view.w2s(origin, *b);
+                painter.line_segment([sa, sb], Stroke::new(1.0_f32, gc));
+            }
+        }
+
         // Measurement overlay (measure tool).
         if let Some(a) = self.measure_a {
             let cc = Color32::from_rgb(255, 210, 40);
