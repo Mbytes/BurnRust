@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=rustburn
+GenericName=Control láser GRBL
+Comment=Control láser GRBL (tipo LightBurn) para Elegoo Phecda y compatibles
+Exec=rustburn
+Icon=rustburn
+Categories=Graphics;Utility;Engineering;
+Terminal=false
+StartupNotify=true
+Keywords=laser;grbl;engraving;cutting;cnc;
