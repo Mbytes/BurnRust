@@ -1739,7 +1739,7 @@ impl RustburnApp {
             }
             if ui.button("🖼 Importar imagen").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Imagen", &["png", "jpg", "jpeg", "bmp", "gif"])
+                    .add_filter("Imagen", &["png", "jpg", "jpeg", "webp", "bmp", "gif"])
                     .pick_file()
                 {
                     match crate::import::load_image(&path) {
@@ -3067,7 +3067,7 @@ impl RustburnApp {
 
     fn load_cam_photo(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Imagen", &["png", "jpg", "jpeg", "bmp"])
+            .add_filter("Imagen", &["png", "jpg", "jpeg", "webp", "bmp"])
             .pick_file()
         {
             match self.set_cam_photo(&path, ctx) {

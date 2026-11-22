@@ -399,6 +399,34 @@ pub fn run() {
         );
     }
 
+    // Importar imagen: codificar/decodificar PNG y WebP → escala de grises.
+    {
+        use image::{Rgb, RgbImage};
+        let dir = std::env::temp_dir();
+        let mut img = RgbImage::new(6, 4);
+        for y in 0..4 {
+            for x in 0..6 {
+                img.put_pixel(x, y, Rgb([(x * 40) as u8, (y * 60) as u8, 90]));
+            }
+        }
+        for ext in ["png", "webp"] {
+            let p = dir.join(format!("rustburn_selftest_img.{ext}"));
+            img.save(&p).unwrap_or_else(|e| panic!("guardar {ext}: {e}"));
+            let kind = crate::import::load_image(&p)
+                .unwrap_or_else(|e| panic!("load_image {ext}: {e}"));
+            let _ = std::fs::remove_file(&p);
+            match kind {
+                crate::model::ObjectKind::Image(im) => {
+                    assert_eq!((im.width_px, im.height_px), (6, 4), "dimensiones {ext}");
+                    assert_eq!(im.gray.len(), 6 * 4, "buffer gris {ext}");
+                    assert!(im.width_mm > 0.0 && im.height_mm > 0.0, "tamaño mm {ext}");
+                }
+                _ => panic!("{ext}: load_image no devolvió una imagen"),
+            }
+            println!("Importar imagen: {ext} → escala de grises OK");
+        }
+    }
+
     // Affine fit for print&cut registration: recover a known transform.
     {
         use crate::geometry::{fit_affine, Affine, Vec2};
