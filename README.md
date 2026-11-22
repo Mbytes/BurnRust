@@ -1,5 +1,7 @@
 # rustburn
 
+**Español** · [English](README.en.md)
+
 Aplicación nativa en **Rust** para **Linux** de diseño y control de láser, al estilo
 **LightBurn**, pensada para láseres de diodo con firmware **GRBL 1.1** como la
 **Elegoo Phecda 20 W**. Un solo binario, sin dependencias de tiempo de ejecución,
