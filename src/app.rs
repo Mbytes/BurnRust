@@ -138,6 +138,10 @@ pub struct RustburnApp {
     polygon_sides: u32,
     text_content: String,
     text_height: f64,
+    /// Selected font family for text (empty = automatic).
+    text_font: String,
+    /// Cached list of installed font families, for the picker.
+    font_families: Vec<String>,
     // variable text / serial numbering
     num_series: bool,
     num_start: i64,
@@ -160,6 +164,9 @@ pub struct RustburnApp {
     new_machine_name: String,
     /// Light (white) canvas background instead of the default dark one.
     canvas_light: bool,
+    /// Last preferences written to disk, and the debounce timer for autosave.
+    saved_prefs: crate::prefs::Prefs,
+    prefs_dirty_at: Option<std::time::Instant>,
     mat_test: crate::gcode::MaterialTest,
     show_mat_test: bool,
 
@@ -289,6 +296,8 @@ impl RustburnApp {
             polygon_sides: 6,
             text_content: "TEXTO".to_string(),
             text_height: 20.0,
+            text_font: String::new(),
+            font_families: Vec::new(),
             num_series: false,
             num_start: 1,
             num_count: 10,
@@ -304,6 +313,8 @@ impl RustburnApp {
             machines: crate::machines::load(),
             new_machine_name: String::new(),
             canvas_light: false,
+            saved_prefs: crate::prefs::Prefs::default(),
+            prefs_dirty_at: None,
             mat_test: crate::gcode::MaterialTest::default(),
             show_mat_test: false,
             cam_device: "/dev/video0".to_string(),
@@ -361,6 +372,22 @@ impl RustburnApp {
             project_path: None,
             status_msg: String::new(),
         };
+
+        // Cache the installed font families for the text font picker.
+        app.font_families = crate::text::available_families(&app.fontdb);
+
+        // Restore last-used preferences (machine, background, font).
+        let prefs = crate::prefs::load();
+        app.canvas_light = prefs.canvas_light;
+        if let Some(m) = &prefs.machine {
+            app.doc.machine = m.clone();
+        }
+        if !prefs.text_font.is_empty()
+            && app.font_families.iter().any(|f| *f == prefs.text_font)
+        {
+            app.text_font = prefs.text_font.clone();
+        }
+        app.saved_prefs = app.current_prefs();
 
         // Showcase Phase 3 primitives in the demo scene.
         if std::env::var("RUSTBURN_DEMO").is_ok() {
@@ -482,6 +509,31 @@ impl RustburnApp {
             app.recompute_toolpath();
         }
         app
+    }
+
+    /// Snapshot of the values persisted between sessions.
+    fn current_prefs(&self) -> crate::prefs::Prefs {
+        crate::prefs::Prefs {
+            canvas_light: self.canvas_light,
+            machine: Some(self.doc.machine.clone()),
+            text_font: self.text_font.clone(),
+        }
+    }
+
+    /// Persist preferences when they change, debounced so a slider drag does not
+    /// write on every frame. Call once per frame.
+    fn autosave_prefs(&mut self) {
+        let cur = self.current_prefs();
+        if cur == self.saved_prefs {
+            self.prefs_dirty_at = None;
+            return;
+        }
+        let since = *self.prefs_dirty_at.get_or_insert_with(std::time::Instant::now);
+        if since.elapsed() >= std::time::Duration::from_millis(500) {
+            let _ = crate::prefs::save(&cur);
+            self.saved_prefs = cur;
+            self.prefs_dirty_at = None;
+        }
     }
 
     fn log(&mut self, s: impl Into<String>) {
@@ -1719,6 +1771,15 @@ impl RustburnApp {
 }
 
 impl eframe::App for RustburnApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Flush any pending preference changes on a clean close.
+        let cur = self.current_prefs();
+        if cur != self.saved_prefs {
+            let _ = crate::prefs::save(&cur);
+            self.saved_prefs = cur;
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Whole-app theme follows the light/dark canvas preference.
         let want_light = self.canvas_light;
@@ -1729,6 +1790,7 @@ impl eframe::App for RustburnApp {
                 egui::Visuals::dark()
             });
         }
+        self.autosave_prefs();
         self.pump_device();
         self.handle_shortcuts(ctx);
         // Keep polling the worker for live status.
@@ -2728,6 +2790,26 @@ impl RustburnApp {
                         .desired_width(f32::INFINITY),
                 );
                 ui.horizontal(|ui| {
+                    ui.label("Fuente:");
+                    let shown = if self.text_font.is_empty() {
+                        "Automática".to_string()
+                    } else {
+                        self.text_font.clone()
+                    };
+                    egui::ComboBox::from_id_salt("text_font_pick")
+                        .selected_text(shown)
+                        .width(190.0)
+                        .show_ui(ui, |ui| {
+                            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                                ui.selectable_value(&mut self.text_font, String::new(), "Automática");
+                                for i in 0..self.font_families.len() {
+                                    let fam = self.font_families[i].clone();
+                                    ui.selectable_value(&mut self.text_font, fam.clone(), fam);
+                                }
+                            });
+                        });
+                });
+                ui.horizontal(|ui| {
                     ui.label("Altura:");
                     ui.add(
                         egui::DragValue::new(&mut self.text_height)
@@ -3308,7 +3390,8 @@ impl RustburnApp {
             self.status_msg = "Texto vacío".into();
             return;
         }
-        match crate::text::text_to_polylines(&self.fontdb, &content, self.text_height) {
+        let font = (!self.text_font.is_empty()).then(|| self.text_font.clone());
+        match crate::text::text_to_polylines_family(&self.fontdb, &content, self.text_height, font.as_deref()) {
             Some(pls) => self.add_vector(pls, at, "texto"),
             None => self.status_msg = "No se encontró una fuente utilizable".into(),
         }
@@ -3341,6 +3424,7 @@ impl RustburnApp {
     fn create_number_series(&mut self, at: Vec2) {
         let count = self.num_count.max(1);
         let template = self.text_content.clone();
+        let font = (!self.text_font.is_empty()).then(|| self.text_font.clone());
         self.snapshot();
         let layer = self.selected_layer().min(self.doc.layers.len().saturating_sub(1));
         let mut made = 0usize;
@@ -3351,7 +3435,12 @@ impl RustburnApp {
             if label.trim().is_empty() {
                 continue;
             }
-            let Some(pls) = crate::text::text_to_polylines(&self.fontdb, &label, self.text_height)
+            let Some(pls) = crate::text::text_to_polylines_family(
+                &self.fontdb,
+                &label,
+                self.text_height,
+                font.as_deref(),
+            )
             else {
                 self.status_msg = "No se encontró una fuente utilizable".into();
                 return;

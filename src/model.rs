@@ -33,7 +33,7 @@ pub enum Origin {
 }
 
 /// Physical machine configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineSettings {
     pub bed_w_mm: f64,
     pub bed_h_mm: f64,

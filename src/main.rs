@@ -18,6 +18,7 @@ mod import;
 mod machines;
 mod materials;
 mod model;
+mod prefs;
 mod project;
 mod shapes;
 mod text;

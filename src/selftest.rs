@@ -155,6 +155,32 @@ pub fn run() {
     assert!(!pls_fb.is_empty(), "fallback directo: sin contornos");
     println!("Texto 'Rust' (BD vacía → respaldo directo): {} contornos", pls_fb.len());
 
+    // Font picker: list families and render with a chosen one.
+    let fams = crate::text::available_families(&db);
+    assert!(fams.contains(&"DejaVu Sans".to_string()), "falta DejaVu en la lista");
+    let pls_f = crate::text::text_to_polylines_family(&db, "Rust", 20.0, Some("DejaVu Sans"))
+        .expect("render con familia elegida");
+    assert!(!pls_f.is_empty());
+    println!("Selector de fuente: {} familias, render con elegida OK", fams.len());
+
+    // Preferences round-trip (machine + background + font) through JSON.
+    {
+        let mut m = crate::model::MachineSettings::default();
+        m.bed_w_mm = 500.0;
+        m.origin = crate::model::Origin::TopLeft;
+        let p = crate::prefs::Prefs {
+            canvas_light: true,
+            machine: Some(m),
+            text_font: "DejaVu Sans".into(),
+        };
+        let json = serde_json::to_string(&p).expect("serializar prefs");
+        let back: crate::prefs::Prefs = serde_json::from_str(&json).expect("deserializar prefs");
+        assert_eq!(back, p, "las preferencias no sobreviven el round-trip");
+        assert_eq!(back.machine.as_ref().unwrap().bed_w_mm, 500.0);
+        assert!(back.canvas_light);
+        println!("Preferencias: guardar/cargar (máquina+fondo+fuente) OK");
+    }
+
     // OpenGL version parsing used by the software-render fallback.
     assert_eq!(crate::gl_major_version("2.1 Mesa 23.2.1-1ubuntu3"), Some(2));
     assert_eq!(crate::gl_major_version("4.6 (Core Profile) Mesa 23.2.1"), Some(4));

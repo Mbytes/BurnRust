@@ -29,17 +29,41 @@ pub fn build_font_db_embedded_only() -> fontdb::Database {
     db
 }
 
-/// Convert `text` into polylines (mm) with cap/em height `height_mm`.
-///
-/// Tries, in order: the preferred system face, then any DejaVu face, then every
-/// other face in the database — because a font the DB indexed can still fail to
-/// load or lack outlines. As a guaranteed last resort it parses the **embedded**
-/// DejaVu Sans bytes directly (bypassing fontdb entirely), so text always works
-/// even on machines with no usable system fonts. Returns `None` only if even the
-/// embedded font cannot be parsed (should never happen).
+/// Sorted, de-duplicated list of font family names available in `db` (the fonts
+/// installed on this machine, plus the bundled DejaVu Sans). For the UI picker.
+pub fn available_families(db: &fontdb::Database) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for f in db.faces() {
+        if let Some((name, _)) = f.families.first() {
+            if !name.is_empty() {
+                set.insert(name.clone());
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Convert `text` into polylines (mm) with the automatically-chosen font.
 pub fn text_to_polylines(db: &fontdb::Database, text: &str, height_mm: f64) -> Option<Vec<Polyline>> {
+    text_to_polylines_family(db, text, height_mm, None)
+}
+
+/// Convert `text` into polylines (mm) with cap/em height `height_mm`, optionally
+/// using the font `family` (by name) when given.
+///
+/// Tries, in order: the requested family (if any), the preferred system sans,
+/// any DejaVu face, then every other face — because a font the DB indexed can
+/// still fail to load or lack outlines. As a guaranteed last resort it parses the
+/// **embedded** DejaVu Sans bytes directly (bypassing fontdb entirely), so text
+/// always works even on machines with no usable system fonts.
+pub fn text_to_polylines_family(
+    db: &fontdb::Database,
+    text: &str,
+    height_mm: f64,
+    family: Option<&str>,
+) -> Option<Vec<Polyline>> {
     // 1) Try database faces, best candidate first.
-    for id in candidate_face_ids(db) {
+    for id in candidate_face_ids(db, family) {
         let got = db
             .with_face_data(id, |data, index| {
                 ttf_parser::Face::parse(data, index)
@@ -56,8 +80,13 @@ pub fn text_to_polylines(db: &fontdb::Database, text: &str, height_mm: f64) -> O
     render_face(&face, text, height_mm)
 }
 
-/// Ordered list of faces to try: preferred sans-serif, then DejaVu, then the rest.
-fn candidate_face_ids(db: &fontdb::Database) -> Vec<fontdb::ID> {
+/// Ordered list of faces to try: the requested `family` first (if any), then the
+/// preferred sans-serif, then DejaVu, then the rest.
+fn candidate_face_ids(db: &fontdb::Database, family: Option<&str>) -> Vec<fontdb::ID> {
+    let want = family
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+    let mut chosen: Vec<fontdb::ID> = Vec::new();
     let mut preferred = None;
     let mut dejavu = None;
     let mut rest: Vec<fontdb::ID> = Vec::new();
@@ -67,6 +96,12 @@ fn candidate_face_ids(db: &fontdb::Database) -> Vec<fontdb::ID> {
             .first()
             .map(|(s, _)| s.to_lowercase())
             .unwrap_or_default();
+        if let Some(w) = &want {
+            if fam == *w || fam.contains(w.as_str()) {
+                chosen.push(f.id);
+                continue;
+            }
+        }
         if preferred.is_none() && fam.contains("sans") && !fam.contains("mono") {
             preferred = Some(f.id);
         } else if dejavu.is_none() && fam.contains("dejavu") && !fam.contains("mono") {
@@ -76,6 +111,7 @@ fn candidate_face_ids(db: &fontdb::Database) -> Vec<fontdb::ID> {
         }
     }
     let mut out = Vec::new();
+    out.extend(chosen);
     out.extend(preferred);
     out.extend(dejavu);
     out.extend(rest);
