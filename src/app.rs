@@ -158,6 +158,8 @@ pub struct RustburnApp {
     new_material_name: String,
     machines: Vec<crate::machines::MachineProfile>,
     new_machine_name: String,
+    /// Light (white) canvas background instead of the default dark one.
+    canvas_light: bool,
     mat_test: crate::gcode::MaterialTest,
     show_mat_test: bool,
 
@@ -301,6 +303,7 @@ impl RustburnApp {
             new_material_name: String::new(),
             machines: crate::machines::load(),
             new_machine_name: String::new(),
+            canvas_light: false,
             mat_test: crate::gcode::MaterialTest::default(),
             show_mat_test: false,
             cam_device: "/dev/video0".to_string(),
@@ -1302,6 +1305,7 @@ impl RustburnApp {
                     ui.selectable_value(&mut m.origin, crate::model::Origin::TopLeft, "Superior-izq");
                 });
                 ui.checkbox(&mut m.optimize_travel, "Optimizar recorrido");
+                ui.checkbox(&mut self.canvas_light, "Fondo blanco (lienzo claro)");
                 ui.separator();
                 if ui.button("🔍 Ajustar vista a la cama").clicked() {
                     refit = true;
@@ -3932,12 +3936,32 @@ impl RustburnApp {
         let bed_min = self.view.w2s(origin, Vec2::new(0.0, 0.0));
         let bed_max = self.view.w2s(origin, Vec2::new(m.bed_w_mm, m.bed_h_mm));
         let bed = Rect::from_two_pos(bed_min, bed_max);
-        painter.rect_filled(bed, 0.0, Color32::from_rgb(28, 30, 34));
-        painter.rect_stroke(bed, 0.0, Stroke::new(1.5_f32, Color32::from_gray(90)));
+        let light = self.canvas_light;
+        let bed_fill = if light {
+            Color32::from_gray(250)
+        } else {
+            Color32::from_rgb(28, 30, 34)
+        };
+        let bed_stroke = if light {
+            Color32::from_gray(120)
+        } else {
+            Color32::from_gray(90)
+        };
+        painter.rect_filled(bed, 0.0, bed_fill);
+        painter.rect_stroke(bed, 0.0, Stroke::new(1.5_f32, bed_stroke));
 
-        // Grid every 10 mm, major every 50 mm.
-        let grid_col = Color32::from_rgba_unmultiplied(255, 255, 255, 16);
-        let major_col = Color32::from_rgba_unmultiplied(255, 255, 255, 40);
+        // Grid every 10 mm, major every 50 mm (dark lines on light, light on dark).
+        let (grid_col, major_col) = if light {
+            (
+                Color32::from_rgba_unmultiplied(0, 0, 0, 24),
+                Color32::from_rgba_unmultiplied(0, 0, 0, 55),
+            )
+        } else {
+            (
+                Color32::from_rgba_unmultiplied(255, 255, 255, 16),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 40),
+            )
+        };
         let mut x = 0.0;
         while x <= m.bed_w_mm + 0.01 {
             let a = self.view.w2s(origin, Vec2::new(x, 0.0));
@@ -4251,9 +4275,19 @@ impl RustburnApp {
         let m = &self.doc.machine;
         let zoom = self.view.zoom;
         const R: f32 = 22.0;
-        let bg = Color32::from_gray(26);
-        let fg = Color32::from_gray(160);
-        let tick = Color32::from_gray(95);
+        let (bg, fg, tick) = if self.canvas_light {
+            (
+                Color32::from_gray(232),
+                Color32::from_gray(70),
+                Color32::from_gray(130),
+            )
+        } else {
+            (
+                Color32::from_gray(26),
+                Color32::from_gray(160),
+                Color32::from_gray(95),
+            )
+        };
         let font = egui::FontId::proportional(10.0);
 
         // Inner edges of the four ruler strips.

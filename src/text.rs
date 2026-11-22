@@ -6,16 +6,25 @@ use crate::geometry::{flatten_cubic, flatten_quad, Polyline, Vec2};
 
 const FLATTEN_TOL_MM: f64 = 0.05;
 
-/// Build (and cache) a font database with the system fonts loaded.
+/// DejaVu Sans, embedded so text always works even on machines with no usable
+/// system fonts (older/minimal installs where `load_system_fonts` finds nothing).
+/// DejaVu is freely redistributable (Bitstream Vera + public-domain additions).
+const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
+
+/// Build (and cache) a font database with the system fonts plus the embedded one.
 pub fn build_font_db() -> fontdb::Database {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
+    // Always load the bundled fallback so text never fails for lack of a font.
+    db.load_font_data(EMBEDDED_FONT.to_vec());
     db
 }
 
 /// Pick a reasonable default face: prefer a non-mono sans-serif, else the first one.
+/// Falls back to the embedded DejaVu Sans if nothing better is available.
 fn pick_face(db: &fontdb::Database) -> Option<fontdb::ID> {
     let mut first = None;
+    let mut dejavu = None;
     for f in db.faces() {
         if first.is_none() {
             first = Some(f.id);
@@ -25,11 +34,14 @@ fn pick_face(db: &fontdb::Database) -> Option<fontdb::ID> {
             .first()
             .map(|(s, _)| s.to_lowercase())
             .unwrap_or_default();
+        if fam.contains("dejavu sans") && !fam.contains("mono") {
+            dejavu = Some(f.id);
+        }
         if fam.contains("sans") && !fam.contains("mono") {
             return Some(f.id);
         }
     }
-    first
+    dejavu.or(first)
 }
 
 /// Convert `text` into polylines (mm) with cap/em height `height_mm`.

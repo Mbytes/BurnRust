@@ -160,12 +160,35 @@ fn run_gl_probe() -> eframe::Result<()> {
     let res = eframe::run_native(
         "rustburn-gl-probe",
         options,
-        Box::new(|_cc| Ok(Box::new(ProbeApp))),
+        Box::new(|cc| {
+            // Inspect the real GL context: egui needs OpenGL 3.x. An old driver
+            // (e.g. Intel GMA, OpenGL 2.1) creates a context but can't render,
+            // so treat version < 3.0 — or no context at all — as a failure.
+            match &cc.gl {
+                Some(gl) => {
+                    use eframe::glow::HasContext as _;
+                    let ver = unsafe { gl.get_parameter_string(eframe::glow::VERSION) };
+                    if gl_major_version(&ver).map_or(true, |maj| maj < 3) {
+                        GL_CONTEXT_FAILED.store(true, Ordering::SeqCst);
+                    }
+                }
+                None => GL_CONTEXT_FAILED.store(true, Ordering::SeqCst),
+            }
+            Ok(Box::new(ProbeApp))
+        }),
     );
 
-    // Hard failure to create the context, or the watcher saw the GLX error.
+    // Hard failure to create the context, GL too old, or the GLX error was seen.
     if res.is_err() || GL_CONTEXT_FAILED.load(Ordering::SeqCst) {
         std::process::exit(7);
     }
     std::process::exit(0);
+}
+
+/// Parse the major version from an OpenGL `VERSION` string: "2.1 Mesa 23.2.1" →
+/// `Some(2)`, "4.6 (Core Profile) Mesa…" → `Some(4)`, "OpenGL ES 3.0 Mesa…" →
+/// `Some(3)`. Returns the first token that parses as an integer.
+pub(crate) fn gl_major_version(v: &str) -> Option<u32> {
+    v.split(['.', ' ', '(', ')'])
+        .find_map(|s| s.parse::<u32>().ok())
 }

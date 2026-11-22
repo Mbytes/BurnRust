@@ -130,16 +130,21 @@ pub fn run() {
         poly_pl[0].points.len()
     );
 
-    // Text to outlines (uses system fonts).
+    // Text to outlines. The embedded DejaVu Sans guarantees a usable font even
+    // with no system fonts, so this must always produce geometry.
     let db = crate::text::build_font_db();
-    match crate::text::text_to_polylines(&db, "Rust", 20.0) {
-        Some(pls) => {
-            let pts: usize = pls.iter().map(|p| p.points.len()).sum();
-            println!("Texto 'Rust': {} contornos, {} puntos", pls.len(), pts);
-            assert!(!pls.is_empty());
-        }
-        None => println!("Texto: no se encontró una fuente del sistema (ok en CI sin fuentes)"),
-    }
+    let pls = crate::text::text_to_polylines(&db, "Rust", 20.0)
+        .expect("la fuente empotrada debe producir contornos");
+    let pts: usize = pls.iter().map(|p| p.points.len()).sum();
+    assert!(!pls.is_empty() && pts > 0, "texto sin geometría");
+    println!("Texto 'Rust' (fuente empotrada): {} contornos, {} puntos", pls.len(), pts);
+
+    // OpenGL version parsing used by the software-render fallback.
+    assert_eq!(crate::gl_major_version("2.1 Mesa 23.2.1-1ubuntu3"), Some(2));
+    assert_eq!(crate::gl_major_version("4.6 (Core Profile) Mesa 23.2.1"), Some(4));
+    assert_eq!(crate::gl_major_version("OpenGL ES 3.0 Mesa"), Some(3));
+    assert_eq!(crate::gl_major_version("sin versión"), None);
+    println!("Detección GL: parseo de versión OK (GMA 965 = 2.1 → software)");
 
     // Boolean operations + offset.
     let sq = |ox: f64, oy: f64, s: f64| crate::geometry::Polyline {
