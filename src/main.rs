@@ -15,6 +15,7 @@ mod geom_ops;
 mod grbl_settings;
 mod homography;
 mod import;
+mod machines;
 mod materials;
 mod model;
 mod project;

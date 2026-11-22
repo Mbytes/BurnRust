@@ -217,6 +217,29 @@ pub fn run() {
     assert!(!mats.is_empty());
     println!("Biblioteca de materiales: {} presets", mats.len());
 
+    // Machine profiles: a saved laser round-trips through JSON with all fields.
+    {
+        let mut m = crate::model::MachineSettings::default();
+        m.bed_w_mm = 610.0;
+        m.bed_h_mm = 305.0;
+        m.s_max = 1000.0;
+        m.origin = crate::model::Origin::TopLeft;
+        m.baud = 230400;
+        let prof = crate::machines::MachineProfile {
+            name: "Mi láser 60×30".into(),
+            settings: m.clone(),
+        };
+        let json = serde_json::to_string(&vec![prof]).expect("serializar perfil");
+        let back: Vec<crate::machines::MachineProfile> =
+            serde_json::from_str(&json).expect("deserializar perfil");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].name, "Mi láser 60×30");
+        assert_eq!(back[0].settings.bed_w_mm, 610.0);
+        assert_eq!(back[0].settings.baud, 230400);
+        assert!(matches!(back[0].settings.origin, crate::model::Origin::TopLeft));
+        println!("Perfiles de láser: guardar/cargar OK");
+    }
+
     // Image adjustments (brightness / contrast / gamma / invert).
     let mut adj = crate::model::ImageAdjust::default();
     assert!(adj.is_identity() && adj.map(100) == 100);

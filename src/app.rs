@@ -156,6 +156,8 @@ pub struct RustburnApp {
     // materials & test
     materials: Vec<crate::materials::Material>,
     new_material_name: String,
+    machines: Vec<crate::machines::MachineProfile>,
+    new_machine_name: String,
     mat_test: crate::gcode::MaterialTest,
     show_mat_test: bool,
 
@@ -297,6 +299,8 @@ impl RustburnApp {
             offset_dist: 1.0,
             materials: crate::materials::load(),
             new_material_name: String::new(),
+            machines: crate::machines::load(),
+            new_machine_name: String::new(),
             mat_test: crate::gcode::MaterialTest::default(),
             show_mat_test: false,
             cam_device: "/dev/video0".to_string(),
@@ -1213,6 +1217,9 @@ impl RustburnApp {
         ];
         let mut open = self.show_config;
         let mut refit = false;
+        let mut apply_profile: Option<usize> = None;
+        let mut delete_profile: Option<usize> = None;
+        let mut save_new = false;
         egui::Window::new("🛠 Configuración de la máquina")
             .open(&mut open)
             .default_width(360.0)
@@ -1229,6 +1236,42 @@ impl RustburnApp {
                         }
                     }
                 });
+
+                // Perfiles de láser guardados por el usuario (ajustes completos).
+                if !self.machines.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label("Mis láseres:");
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, prof) in self.machines.iter().enumerate() {
+                            if ui.button(&prof.name).on_hover_text(
+                                "Aplicar este láser (tamaño, origen, modo, baudios…)",
+                            ).clicked() {
+                                apply_profile = Some(i);
+                            }
+                            if ui.small_button("✕").on_hover_text("Borrar este láser").clicked() {
+                                delete_profile = Some(i);
+                            }
+                        }
+                    });
+                }
+
+                // Guardar los ajustes actuales como un láser nuevo.
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_machine_name)
+                            .hint_text("Nombre del láser")
+                            .desired_width(170.0),
+                    );
+                    let can_save = !self.new_machine_name.trim().is_empty();
+                    if ui
+                        .add_enabled(can_save, egui::Button::new("💾 Guardar como láser nuevo"))
+                        .on_hover_text("Guarda la configuración actual con este nombre")
+                        .clicked()
+                    {
+                        save_new = true;
+                    }
+                });
+
                 ui.separator();
                 let m = &mut self.doc.machine;
                 egui::Grid::new("cfg_grid").num_columns(2).show(ui, |ui| {
@@ -1263,8 +1306,45 @@ impl RustburnApp {
                 if ui.button("🔍 Ajustar vista a la cama").clicked() {
                     refit = true;
                 }
-                ui.weak("Los perfiles ajustan tamaño de cama y S máx. Verifica siempre con tu máquina.");
+                ui.weak("Los presets ajustan tamaño de cama y S máx. «Guardar como láser nuevo» guarda toda la configuración actual (origen, modo, baudios…) y queda en «Mis láseres». Verifica siempre con tu máquina.");
             });
+        // Apply deferred profile actions outside the window closure.
+        if let Some(i) = apply_profile {
+            if let Some(prof) = self.machines.get(i) {
+                self.doc.machine = prof.settings.clone();
+                refit = true;
+                self.status_msg = format!("Láser «{}» aplicado", prof.name);
+            }
+        }
+        if let Some(i) = delete_profile {
+            if i < self.machines.len() {
+                let name = self.machines.remove(i).name;
+                match crate::machines::save(&self.machines) {
+                    Ok(()) => self.status_msg = format!("Láser «{name}» borrado"),
+                    Err(e) => self.status_msg = format!("Error al guardar láseres: {e}"),
+                }
+            }
+        }
+        if save_new {
+            let name = self.new_machine_name.trim().to_string();
+            if !name.is_empty() {
+                // Reemplaza si ya existe uno con el mismo nombre.
+                let prof = crate::machines::MachineProfile {
+                    name: name.clone(),
+                    settings: self.doc.machine.clone(),
+                };
+                if let Some(slot) = self.machines.iter_mut().find(|p| p.name == name) {
+                    *slot = prof;
+                } else {
+                    self.machines.push(prof);
+                }
+                match crate::machines::save(&self.machines) {
+                    Ok(()) => self.status_msg = format!("Láser «{name}» guardado"),
+                    Err(e) => self.status_msg = format!("Error al guardar láser: {e}"),
+                }
+                self.new_machine_name.clear();
+            }
+        }
         if refit {
             self.view.initialized = false;
         }
