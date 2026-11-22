@@ -160,6 +160,54 @@ pub fn load_pdf(path: &Path, dpi: u32) -> Result<ObjectKind> {
     )
 }
 
+/// Import a PDF as **vector** paths (for cutting): convert the first page to SVG
+/// with an external tool (`pdftocairo -svg`, `pdf2svg`, `inkscape` or `mutool`),
+/// then reuse the SVG importer. Fails with a helpful message if the page has no
+/// vector strokes (e.g. a scanned PDF) — use [`load_pdf`] as an image instead.
+pub fn load_pdf_vector(path: &Path) -> Result<ObjectKind> {
+    use std::process::Command;
+
+    let dir = std::env::temp_dir();
+    let stem = format!("rustburn_pdfv_{}", std::process::id());
+    let out_svg = dir.join(format!("{stem}.svg"));
+    let _ = std::fs::remove_file(&out_svg);
+
+    let pdf = path.to_string_lossy().to_string();
+    let svg = out_svg.to_string_lossy().to_string();
+
+    let attempts: [(&str, Vec<String>); 4] = [
+        ("pdftocairo", vec!["-svg".into(), "-f".into(), "1".into(), "-l".into(), "1".into(), pdf.clone(), svg.clone()]),
+        ("pdf2svg", vec![pdf.clone(), svg.clone(), "1".into()]),
+        ("inkscape", vec![pdf.clone(), "--export-type=svg".into(), format!("--export-filename={svg}")]),
+        ("mutool", vec!["draw".into(), "-o".into(), svg.clone(), pdf.clone(), "1".into()]),
+    ];
+
+    let mut last = String::from("ninguna herramienta disponible");
+    for (tool, args) in attempts {
+        match Command::new(tool).args(&args).output() {
+            Ok(_) if out_svg.exists() && std::fs::metadata(&out_svg).map(|m| m.len() > 0).unwrap_or(false) => {
+                let kind = load_svg(&out_svg);
+                let _ = std::fs::remove_file(&out_svg);
+                let kind = kind.context("el SVG generado del PDF no se pudo interpretar")?;
+                if let ObjectKind::Vector(v) = &kind {
+                    if v.polylines.is_empty() {
+                        anyhow::bail!(
+                            "el PDF no contiene trazos vectoriales (¿es escaneado?); impórtalo como imagen"
+                        );
+                    }
+                }
+                return Ok(kind);
+            }
+            Ok(o) => last = format!("{tool}: {}", String::from_utf8_lossy(&o.stderr).trim()),
+            Err(e) => last = format!("{tool}: {e}"),
+        }
+    }
+    let _ = std::fs::remove_file(&out_svg);
+    anyhow::bail!(
+        "No se pudo convertir el PDF a vectores. Instala poppler-utils (pdftocairo), pdf2svg o inkscape. Detalle: {last}"
+    )
+}
+
 /// Load a raster image as a greyscale [`ImageData`], sized from its pixel dimensions.
 pub fn load_image(path: &Path) -> Result<ObjectKind> {
     let img = image::open(path).with_context(|| format!("abriendo imagen {}", path.display()))?;

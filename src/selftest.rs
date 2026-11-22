@@ -520,10 +520,18 @@ pub fn run() {
             match crate::import::load_pdf(&pdf, 72) {
                 Ok(crate::model::ObjectKind::Image(im)) => {
                     assert!(im.width_px > 0 && im.height_px > 0, "PDF sin píxeles");
-                    println!("Importar PDF: {}×{} px → imagen OK", im.width_px, im.height_px);
+                    println!("Importar PDF (imagen): {}×{} px OK", im.width_px, im.height_px);
                 }
                 Ok(_) => panic!("PDF no devolvió una imagen"),
-                Err(e) => println!("Importar PDF: convertidor presente pero falló ({e})"),
+                Err(e) => println!("Importar PDF (imagen): convertidor presente pero falló ({e})"),
+            }
+            match crate::import::load_pdf_vector(&pdf) {
+                Ok(crate::model::ObjectKind::Vector(v)) => {
+                    assert!(!v.polylines.is_empty(), "PDF vectorial sin trazos");
+                    println!("Importar PDF (vectores): {} polilíneas OK", v.polylines.len());
+                }
+                Ok(_) => panic!("PDF vectorial no devolvió vectores"),
+                Err(e) => println!("Importar PDF (vectores): convertidor presente pero falló ({e})"),
             }
         } else {
             println!("Importar PDF: sin convertidor (gs) en este equipo, omitido");

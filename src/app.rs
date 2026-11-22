@@ -573,6 +573,34 @@ impl RustburnApp {
             .unwrap_or(0)
     }
 
+    /// Import a PDF as a raster image (`as_image`) or as vector paths.
+    fn import_pdf(&mut self, as_image: bool) {
+        let Some(path) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() else {
+            return;
+        };
+        self.status_msg = "Convirtiendo PDF…".into();
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "pdf".into());
+        let res = if as_image {
+            crate::import::load_pdf(&path, 200)
+        } else {
+            crate::import::load_pdf_vector(&path)
+        };
+        match res {
+            Ok(kind) => {
+                self.add_imported(kind, name);
+                self.status_msg = if as_image {
+                    "PDF importado (imagen)".into()
+                } else {
+                    "PDF importado (vectores)".into()
+                };
+            }
+            Err(e) => self.status_msg = format!("Error PDF: {e}"),
+        }
+    }
+
     fn add_imported(&mut self, kind: ObjectKind, name: String) {
         self.snapshot();
         let layer = self.selected_layer().min(self.doc.layers.len().saturating_sub(1));
@@ -1951,29 +1979,24 @@ impl RustburnApp {
                     }
                 }
             }
-            if ui
-                .button("📄 Importar PDF")
-                .on_hover_text("Rasteriza la 1ª página (requiere poppler o ghostscript). Puedes vectorizarla después.")
-                .clicked()
-            {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("PDF", &["pdf"])
-                    .pick_file()
+            ui.menu_button("📄 Importar PDF", |ui| {
+                if ui
+                    .button("✒ Como vectores (corte)")
+                    .on_hover_text("Convierte los trazos del PDF a vectores (pdftocairo/inkscape).")
+                    .clicked()
                 {
-                    self.status_msg = "Convirtiendo PDF…".into();
-                    match crate::import::load_pdf(&path, 200) {
-                        Ok(kind) => {
-                            let name = path
-                                .file_name()
-                                .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_else(|| "pdf".into());
-                            self.add_imported(kind, name);
-                            self.status_msg = "PDF importado (imagen)".into();
-                        }
-                        Err(e) => self.status_msg = format!("Error PDF: {e}"),
-                    }
+                    ui.close_menu();
+                    self.import_pdf(false);
                 }
-            }
+                if ui
+                    .button("🖼 Como imagen (grabado)")
+                    .on_hover_text("Rasteriza la 1ª página; luego puedes vectorizarla (poppler/ghostscript).")
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.import_pdf(true);
+                }
+            });
             ui.separator();
             if ui.button("⚙ Generar G-code").clicked() {
                 self.generate_gcode();
