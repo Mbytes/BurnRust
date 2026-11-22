@@ -137,7 +137,23 @@ pub fn run() {
         .expect("la fuente empotrada debe producir contornos");
     let pts: usize = pls.iter().map(|p| p.points.len()).sum();
     assert!(!pls.is_empty() && pts > 0, "texto sin geometría");
-    println!("Texto 'Rust' (fuente empotrada): {} contornos, {} puntos", pls.len(), pts);
+    println!("Texto 'Rust' (con fuentes de sistema): {} contornos, {} puntos", pls.len(), pts);
+
+    // Critical: exercise the embedded font ALONE (no system fonts), which is the
+    // real situation on machines like the Intel GMA 965 box.
+    let db_emb = crate::text::build_font_db_embedded_only();
+    let pls_emb = crate::text::text_to_polylines(&db_emb, "Rust", 20.0)
+        .expect("la fuente EMPOTRADA SOLA debe producir contornos (equipo sin fuentes)");
+    assert!(!pls_emb.is_empty(), "embedded-only: sin contornos");
+    println!("Texto 'Rust' (SOLO fuente empotrada): {} contornos", pls_emb.len());
+
+    // Bulletproof: even an EMPTY font database must render via the direct
+    // embedded-bytes fallback (covers broken/unusable system fonts too).
+    let db_empty = usvg::fontdb::Database::new();
+    let pls_fb = crate::text::text_to_polylines(&db_empty, "Rust", 20.0)
+        .expect("el respaldo de bytes empotrados debe producir contornos con BD vacía");
+    assert!(!pls_fb.is_empty(), "fallback directo: sin contornos");
+    println!("Texto 'Rust' (BD vacía → respaldo directo): {} contornos", pls_fb.len());
 
     // OpenGL version parsing used by the software-render fallback.
     assert_eq!(crate::gl_major_version("2.1 Mesa 23.2.1-1ubuntu3"), Some(2));

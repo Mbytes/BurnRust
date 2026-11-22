@@ -20,78 +20,111 @@ pub fn build_font_db() -> fontdb::Database {
     db
 }
 
-/// Pick a reasonable default face: prefer a non-mono sans-serif, else the first one.
-/// Falls back to the embedded DejaVu Sans if nothing better is available.
-fn pick_face(db: &fontdb::Database) -> Option<fontdb::ID> {
-    let mut first = None;
-    let mut dejavu = None;
-    for f in db.faces() {
-        if first.is_none() {
-            first = Some(f.id);
+/// Font DB with ONLY the embedded font loaded (no system fonts). Mirrors the
+/// situation on a machine where `load_system_fonts` finds nothing, so tests can
+/// exercise the real fallback path.
+pub fn build_font_db_embedded_only() -> fontdb::Database {
+    let mut db = fontdb::Database::new();
+    db.load_font_data(EMBEDDED_FONT.to_vec());
+    db
+}
+
+/// Convert `text` into polylines (mm) with cap/em height `height_mm`.
+///
+/// Tries, in order: the preferred system face, then any DejaVu face, then every
+/// other face in the database — because a font the DB indexed can still fail to
+/// load or lack outlines. As a guaranteed last resort it parses the **embedded**
+/// DejaVu Sans bytes directly (bypassing fontdb entirely), so text always works
+/// even on machines with no usable system fonts. Returns `None` only if even the
+/// embedded font cannot be parsed (should never happen).
+pub fn text_to_polylines(db: &fontdb::Database, text: &str, height_mm: f64) -> Option<Vec<Polyline>> {
+    // 1) Try database faces, best candidate first.
+    for id in candidate_face_ids(db) {
+        let got = db
+            .with_face_data(id, |data, index| {
+                ttf_parser::Face::parse(data, index)
+                    .ok()
+                    .and_then(|face| render_face(&face, text, height_mm))
+            })
+            .flatten();
+        if let Some(polys) = got {
+            return Some(polys);
         }
+    }
+    // 2) Guaranteed fallback: parse the embedded font bytes directly.
+    let face = ttf_parser::Face::parse(EMBEDDED_FONT, 0).ok()?;
+    render_face(&face, text, height_mm)
+}
+
+/// Ordered list of faces to try: preferred sans-serif, then DejaVu, then the rest.
+fn candidate_face_ids(db: &fontdb::Database) -> Vec<fontdb::ID> {
+    let mut preferred = None;
+    let mut dejavu = None;
+    let mut rest: Vec<fontdb::ID> = Vec::new();
+    for f in db.faces() {
         let fam = f
             .families
             .first()
             .map(|(s, _)| s.to_lowercase())
             .unwrap_or_default();
-        if fam.contains("dejavu sans") && !fam.contains("mono") {
+        if preferred.is_none() && fam.contains("sans") && !fam.contains("mono") {
+            preferred = Some(f.id);
+        } else if dejavu.is_none() && fam.contains("dejavu") && !fam.contains("mono") {
             dejavu = Some(f.id);
-        }
-        if fam.contains("sans") && !fam.contains("mono") {
-            return Some(f.id);
+        } else {
+            rest.push(f.id);
         }
     }
-    dejavu.or(first)
+    let mut out = Vec::new();
+    out.extend(preferred);
+    out.extend(dejavu);
+    out.extend(rest);
+    out
 }
 
-/// Convert `text` into polylines (mm) with cap/em height `height_mm`.
-/// Returns `None` if no usable font is found.
-pub fn text_to_polylines(db: &fontdb::Database, text: &str, height_mm: f64) -> Option<Vec<Polyline>> {
-    let id = pick_face(db)?;
-    db.with_face_data(id, |data, index| {
-        let face = ttf_parser::Face::parse(data, index).ok()?;
-        let upem = face.units_per_em() as f64;
-        if upem <= 0.0 {
-            return None;
-        }
-        let scale = height_mm / upem;
-        let ascent = face.ascender() as f64;
-        let mut polys: Vec<Polyline> = Vec::new();
-        let mut pen_x = 0.0f64;
+/// Render `text` with a parsed face into mm-space polylines. `None` if the face
+/// has no usable metrics or produced no geometry.
+fn render_face(face: &ttf_parser::Face, text: &str, height_mm: f64) -> Option<Vec<Polyline>> {
+    let upem = face.units_per_em() as f64;
+    if upem <= 0.0 {
+        return None;
+    }
+    let scale = height_mm / upem;
+    let ascent = face.ascender() as f64;
+    let mut polys: Vec<Polyline> = Vec::new();
+    let mut pen_x = 0.0f64;
 
-        for ch in text.chars() {
-            if ch == '\n' {
-                pen_x = 0.0;
+    for ch in text.chars() {
+        if ch == '\n' {
+            pen_x = 0.0;
+            continue;
+        }
+        let gid = match face.glyph_index(ch) {
+            Some(g) => g,
+            None => {
+                pen_x += upem * 0.5 * scale;
                 continue;
             }
-            let gid = match face.glyph_index(ch) {
-                Some(g) => g,
-                None => {
-                    pen_x += upem * 0.5 * scale;
-                    continue;
-                }
-            };
-            let mut ol = Outline {
-                polylines: Vec::new(),
-                cur: Polyline::new(),
-                last: Vec2::new(0.0, 0.0),
-                scale,
-                pen_x,
-                ascent,
-            };
-            face.outline_glyph(gid, &mut ol);
-            ol.flush();
-            polys.extend(ol.polylines);
-            let adv = face.glyph_hor_advance(gid).unwrap_or(upem as u16) as f64;
-            pen_x += adv * scale;
-        }
-        if polys.is_empty() {
-            None
-        } else {
-            Some(polys)
-        }
-    })
-    .flatten()
+        };
+        let mut ol = Outline {
+            polylines: Vec::new(),
+            cur: Polyline::new(),
+            last: Vec2::new(0.0, 0.0),
+            scale,
+            pen_x,
+            ascent,
+        };
+        face.outline_glyph(gid, &mut ol);
+        ol.flush();
+        polys.extend(ol.polylines);
+        let adv = face.glyph_hor_advance(gid).unwrap_or(upem as u16) as f64;
+        pen_x += adv * scale;
+    }
+    if polys.is_empty() {
+        None
+    } else {
+        Some(polys)
+    }
 }
 
 /// `ttf_parser` outline sink that accumulates mm-space polylines (Y pointing down).
