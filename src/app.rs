@@ -536,6 +536,27 @@ impl RustburnApp {
         }
     }
 
+    /// Reset to an empty project, keeping the current machine configuration.
+    /// Undoable with Ctrl+Z (the previous document is pushed to history).
+    fn new_project(&mut self) {
+        self.snapshot();
+        let machine = self.doc.machine.clone();
+        self.doc = crate::model::Document::default();
+        self.doc.machine = machine;
+        self.textures.clear();
+        self.project_path = None;
+        self.gcode.clear();
+        self.gcode_msg.clear();
+        self.toolpath = None;
+        self.multi.clear();
+        self.poly_points.clear();
+        self.measure_a = None;
+        self.measure_b = None;
+        self.sim_playing = false;
+        self.sim_pos_mm = 0.0;
+        self.status_msg = "Nuevo proyecto".into();
+    }
+
     fn log(&mut self, s: impl Into<String>) {
         self.console.push(s.into());
         if self.console.len() > 600 {
@@ -1832,6 +1853,13 @@ impl eframe::App for RustburnApp {
 impl RustburnApp {
     fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
+            if ui
+                .button("🗋 Nuevo proyecto")
+                .on_hover_text("Vaciar y empezar de cero (Ctrl+Z para deshacer)")
+                .clicked()
+            {
+                self.new_project();
+            }
             if ui.button("📂 Abrir proyecto").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("Proyecto rustburn", &["rbp", "json"])
@@ -1951,12 +1979,12 @@ impl RustburnApp {
             ui.toggle_value(&mut self.show_grbl, "⚙ Ajustes GRBL");
             ui.toggle_value(&mut self.show_config, "🛠 Configuración");
             ui.toggle_value(&mut self.show_help, "❓ Ayuda");
-            if ui.add_enabled(!self.gcode.is_empty(), egui::Button::new("⬇ Guardar .gcode"))
+            if ui.add_enabled(!self.gcode.is_empty(), egui::Button::new("⬇ Guardar .nc"))
                 .clicked()
             {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("G-code", &["gcode", "nc"])
-                    .set_file_name("trabajo.gcode")
+                    .add_filter("G-code", &["nc", "gcode"])
+                    .set_file_name("trabajo.nc")
                     .save_file()
                 {
                     let content = self.gcode.join("\n");
@@ -2155,7 +2183,7 @@ impl RustburnApp {
                 if ui.button("⚙ Generar test → G-code").clicked() {
                     gen = true;
                 }
-                ui.weak("Luego: Guardar .gcode o Iniciar (conectado).");
+                ui.weak("Luego: Guardar .nc o Iniciar (conectado).");
             });
         self.show_mat_test = open;
         if gen {
