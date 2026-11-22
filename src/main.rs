@@ -14,6 +14,7 @@ mod geometry;
 mod geom_ops;
 mod grbl_settings;
 mod homography;
+mod i18n;
 mod import;
 mod machines;
 mod materials;

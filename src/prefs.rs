@@ -20,6 +20,9 @@ pub struct Prefs {
     /// Selected text font family (empty = automatic).
     #[serde(default)]
     pub text_font: String,
+    /// UI language.
+    #[serde(default)]
+    pub lang: crate::i18n::Lang,
 }
 
 /// `$HOME/.config/rustburn/prefs.json`.

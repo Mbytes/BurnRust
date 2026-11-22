@@ -8,6 +8,7 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2 as EVec2};
 
 use crate::device::{ConnTarget, DeviceHandle, Evt};
 use crate::geometry::Vec2;
+use crate::i18n::tr;
 use crate::gcode::Toolpath;
 use crate::model::{CutMode, Dither, Document, Object, ObjectKind};
 
@@ -164,6 +165,8 @@ pub struct RustburnApp {
     new_machine_name: String,
     /// Light (white) canvas background instead of the default dark one.
     canvas_light: bool,
+    /// UI language.
+    lang: crate::i18n::Lang,
     /// Last preferences written to disk, and the debounce timer for autosave.
     saved_prefs: crate::prefs::Prefs,
     prefs_dirty_at: Option<std::time::Instant>,
@@ -313,6 +316,7 @@ impl RustburnApp {
             machines: crate::machines::load(),
             new_machine_name: String::new(),
             canvas_light: false,
+            lang: crate::i18n::Lang::default(),
             saved_prefs: crate::prefs::Prefs::default(),
             prefs_dirty_at: None,
             mat_test: crate::gcode::MaterialTest::default(),
@@ -379,6 +383,7 @@ impl RustburnApp {
         // Restore last-used preferences (machine, background, font).
         let prefs = crate::prefs::load();
         app.canvas_light = prefs.canvas_light;
+        app.lang = prefs.lang;
         if let Some(m) = &prefs.machine {
             app.doc.machine = m.clone();
         }
@@ -517,6 +522,7 @@ impl RustburnApp {
             canvas_light: self.canvas_light,
             machine: Some(self.doc.machine.clone()),
             text_font: self.text_font.clone(),
+            lang: self.lang,
         }
     }
 
@@ -1246,16 +1252,18 @@ impl RustburnApp {
         if !self.show_grbl {
             return;
         }
+        let lang = self.lang;
         let connected = self.device.connected;
         let mut open = self.show_grbl;
         let mut write_all = false;
-        egui::Window::new("⚙ Ajustes GRBL ($$)")
+        egui::Window::new(tr(lang, "⚙ Ajustes GRBL ($$)"))
+            .id(egui::Id::new("grbl_window"))
             .open(&mut open)
             .default_width(460.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(connected, egui::Button::new("🔄 Leer ($$)"))
+                        .add_enabled(connected, egui::Button::new(tr(lang, "🔄 Leer ($$)")))
                         .clicked()
                     {
                         self.device.query_settings();
@@ -1263,19 +1271,19 @@ impl RustburnApp {
                     if ui
                         .add_enabled(
                             connected && !self.grbl_settings.is_empty(),
-                            egui::Button::new("💾 Escribir todos"),
+                            egui::Button::new(tr(lang, "💾 Escribir todos")),
                         )
                         .clicked()
                     {
                         write_all = true;
                     }
                     if !connected {
-                        ui.weak("(conéctate a la Phecda para leer/escribir)");
+                        ui.weak(tr(lang, "(conéctate a la Phecda para leer/escribir)"));
                     }
                 });
                 ui.separator();
                 if self.grbl_settings.is_empty() {
-                    ui.weak("Sin datos. Pulsa «Leer ($$)» con la máquina conectada.");
+                    ui.weak(tr(lang, "Sin datos. Pulsa «Leer ($$)» con la máquina conectada."));
                     return;
                 }
                 let mut write_one: Option<(u32, String)> = None;
@@ -1293,7 +1301,7 @@ impl RustburnApp {
                                 );
                                 if ui
                                     .add_enabled(connected, egui::Button::new("✎"))
-                                    .on_hover_text("Escribir este parámetro")
+                                    .on_hover_text(tr(lang, "Escribir este parámetro"))
                                     .clicked()
                                 {
                                     write_one = Some((s.num, s.value.clone()));
@@ -1332,17 +1340,19 @@ impl RustburnApp {
             ("Genérica 300×300", 300.0, 300.0, 1000.0),
             ("Genérica 200×200", 200.0, 200.0, 1000.0),
         ];
+        let lang = self.lang;
         let mut open = self.show_config;
         let mut refit = false;
         let mut apply_profile: Option<usize> = None;
         let mut delete_profile: Option<usize> = None;
         let mut save_new = false;
-        egui::Window::new("🛠 Configuración de la máquina")
+        egui::Window::new(tr(lang, "🛠 Configuración de la máquina"))
+            .id(egui::Id::new("config_window"))
             .open(&mut open)
             .default_width(360.0)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label("Perfil de máquina:");
+                ui.label(tr(lang, "Perfil de máquina:"));
                 ui.horizontal_wrapped(|ui| {
                     for &(name, w, h, smax) in PRESETS {
                         if ui.button(name).clicked() {
@@ -1357,15 +1367,15 @@ impl RustburnApp {
                 // Perfiles de láser guardados por el usuario (ajustes completos).
                 if !self.machines.is_empty() {
                     ui.add_space(4.0);
-                    ui.label("Mis láseres:");
+                    ui.label(tr(lang, "Mis láseres:"));
                     ui.horizontal_wrapped(|ui| {
                         for (i, prof) in self.machines.iter().enumerate() {
                             if ui.button(&prof.name).on_hover_text(
-                                "Aplicar este láser (tamaño, origen, modo, baudios…)",
+                                tr(lang, "Aplicar este láser (tamaño, origen, modo, baudios…)"),
                             ).clicked() {
                                 apply_profile = Some(i);
                             }
-                            if ui.small_button("✕").on_hover_text("Borrar este láser").clicked() {
+                            if ui.small_button("✕").on_hover_text(tr(lang, "Borrar este láser")).clicked() {
                                 delete_profile = Some(i);
                             }
                         }
@@ -1376,13 +1386,13 @@ impl RustburnApp {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_machine_name)
-                            .hint_text("Nombre del láser")
+                            .hint_text(tr(lang, "Nombre del láser"))
                             .desired_width(170.0),
                     );
                     let can_save = !self.new_machine_name.trim().is_empty();
                     if ui
-                        .add_enabled(can_save, egui::Button::new("💾 Guardar como láser nuevo"))
-                        .on_hover_text("Guarda la configuración actual con este nombre")
+                        .add_enabled(can_save, egui::Button::new(tr(lang, "💾 Guardar como láser nuevo")))
+                        .on_hover_text(tr(lang, "Guarda la configuración actual con este nombre"))
                         .clicked()
                     {
                         save_new = true;
@@ -1392,39 +1402,39 @@ impl RustburnApp {
                 ui.separator();
                 let m = &mut self.doc.machine;
                 egui::Grid::new("cfg_grid").num_columns(2).show(ui, |ui| {
-                    ui.label("Ancho de cama X (mm)");
+                    ui.label(tr(lang, "Ancho de cama X (mm)"));
                     ui.add(egui::DragValue::new(&mut m.bed_w_mm).range(10.0..=2000.0).speed(1.0));
                     ui.end_row();
-                    ui.label("Alto de cama Y (mm)");
+                    ui.label(tr(lang, "Alto de cama Y (mm)"));
                     ui.add(egui::DragValue::new(&mut m.bed_h_mm).range(10.0..=2000.0).speed(1.0));
                     ui.end_row();
-                    ui.label("S máx ($30)");
+                    ui.label(tr(lang, "S máx ($30)"));
                     ui.add(egui::DragValue::new(&mut m.s_max).range(1.0..=100000.0));
                     ui.end_row();
-                    ui.label("Baudios (USB)");
+                    ui.label(tr(lang, "Baudios (USB)"));
                     ui.add(egui::DragValue::new(&mut m.baud).range(9600..=1000000));
                     ui.end_row();
-                    ui.label("Velocidad de viaje (mm/min)");
+                    ui.label(tr(lang, "Velocidad de viaje (mm/min)"));
                     ui.add(egui::DragValue::new(&mut m.travel_speed).range(100.0..=60000.0));
                     ui.end_row();
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Modo láser:");
-                    ui.selectable_value(&mut m.laser_mode, crate::model::LaserMode::Dynamic, "M4 dinámico");
-                    ui.selectable_value(&mut m.laser_mode, crate::model::LaserMode::Constant, "M3");
+                    ui.label(tr(lang, "Modo láser:"));
+                    ui.selectable_value(&mut m.laser_mode, crate::model::LaserMode::Dynamic, tr(lang, "M4 dinámico"));
+                    ui.selectable_value(&mut m.laser_mode, crate::model::LaserMode::Constant, tr(lang, "M3"));
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Origen:");
-                    ui.selectable_value(&mut m.origin, crate::model::Origin::FrontLeft, "Frontal-izq");
-                    ui.selectable_value(&mut m.origin, crate::model::Origin::TopLeft, "Superior-izq");
+                    ui.label(tr(lang, "Origen:"));
+                    ui.selectable_value(&mut m.origin, crate::model::Origin::FrontLeft, tr(lang, "Frontal-izq"));
+                    ui.selectable_value(&mut m.origin, crate::model::Origin::TopLeft, tr(lang, "Superior-izq"));
                 });
-                ui.checkbox(&mut m.optimize_travel, "Optimizar recorrido");
-                ui.checkbox(&mut self.canvas_light, "Fondo blanco (lienzo claro)");
+                ui.checkbox(&mut m.optimize_travel, tr(lang, "Optimizar recorrido"));
+                ui.checkbox(&mut self.canvas_light, tr(lang, "Fondo blanco (lienzo claro)"));
                 ui.separator();
-                if ui.button("🔍 Ajustar vista a la cama").clicked() {
+                if ui.button(tr(lang, "🔍 Ajustar vista a la cama")).clicked() {
                     refit = true;
                 }
-                ui.weak("Los presets ajustan tamaño de cama y S máx. «Guardar como láser nuevo» guarda toda la configuración actual (origen, modo, baudios…) y queda en «Mis láseres». Verifica siempre con tu máquina.");
+                ui.weak(tr(lang, "Los presets ajustan tamaño de cama y S máx. «Guardar como láser nuevo» guarda toda la configuración actual (origen, modo, baudios…) y queda en «Mis láseres». Verifica siempre con tu máquina."));
             });
         // Apply deferred profile actions outside the window closure.
         if let Some(i) = apply_profile {
@@ -1473,79 +1483,81 @@ impl RustburnApp {
         if !self.show_help {
             return;
         }
+        let lang = self.lang;
         let mut open = self.show_help;
-        egui::Window::new("❓ Ayuda")
+        egui::Window::new(tr(lang, "❓ Ayuda"))
+            .id(egui::Id::new("help_window"))
             .open(&mut open)
             .default_width(460.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-                    ui.heading("rustburn — control láser GRBL");
-                    ui.label("Aplicación nativa para láseres de diodo (Elegoo Phecda y compatibles GRBL 1.1).");
+                    ui.heading(tr(lang, "rustburn — control láser GRBL"));
+                    ui.label(tr(lang, "Aplicación nativa para láseres de diodo (Elegoo Phecda y compatibles GRBL 1.1)."));
                     ui.add_space(6.0);
 
-                    ui.strong("Lienzo");
-                    ui.label("• Rueda del ratón: zoom alrededor del cursor.");
-                    ui.label("• Arrastrar con botón central: desplazar la vista.");
-                    ui.label("• Reglas y cuadrícula en mm (líneas cada 10 mm, mayor cada 50).");
+                    ui.strong(tr(lang, "Lienzo"));
+                    ui.label(tr(lang, "• Rueda del ratón: zoom alrededor del cursor."));
+                    ui.label(tr(lang, "• Arrastrar con botón central: desplazar la vista."));
+                    ui.label(tr(lang, "• Reglas y cuadrícula en mm (líneas cada 10 mm, mayor cada 50)."));
                     ui.add_space(6.0);
 
-                    ui.strong("Herramientas");
-                    ui.label("• Seleccionar: mover, escalar (tiradores) y rotar objetos.");
-                    ui.label("• Nodos: editar puntos (doble clic añade/elimina).");
-                    ui.label("• Rectángulo, Elipse, Línea, Polígono, Polilínea, Texto.");
-                    ui.label("• Operaciones: Unir, Restar, Intersecar, Soldar, Offset (Shift+clic añade operandos).");
+                    ui.strong(tr(lang, "Herramientas"));
+                    ui.label(tr(lang, "• Seleccionar: mover, escalar (tiradores) y rotar objetos."));
+                    ui.label(tr(lang, "• Nodos: editar puntos (doble clic añade/elimina)."));
+                    ui.label(tr(lang, "• Rectángulo, Elipse, Línea, Polígono, Polilínea, Texto."));
+                    ui.label(tr(lang, "• Operaciones: Unir, Restar, Intersecar, Soldar, Offset (Shift+clic añade operandos)."));
                     ui.add_space(6.0);
 
-                    ui.strong("Atajos de teclado");
-                    ui.label("• Ctrl+Z / Ctrl+Y: deshacer / rehacer.");
-                    ui.label("• Ctrl+D: duplicar selección.");
-                    ui.label("• Ctrl+G / Ctrl+Shift+G: agrupar / desagrupar.");
-                    ui.label("• Supr: eliminar selección.");
+                    ui.strong(tr(lang, "Atajos de teclado"));
+                    ui.label(tr(lang, "• Ctrl+Z / Ctrl+Y: deshacer / rehacer."));
+                    ui.label(tr(lang, "• Ctrl+D: duplicar selección."));
+                    ui.label(tr(lang, "• Ctrl+G / Ctrl+Shift+G: agrupar / desagrupar."));
+                    ui.label(tr(lang, "• Supr: eliminar selección."));
                     ui.add_space(6.0);
 
-                    ui.strong("Organizar (panel Objeto)");
-                    ui.label("• Agrupar/Desagrupar; Espejo H/V; Rotar 90°.");
-                    ui.label("• Alinear (6 direcciones), Distribuir H/V, Matriz (rejilla/círculo).");
-                    ui.label("• Shift+clic: añadir objetos a la selección.");
+                    ui.strong(tr(lang, "Organizar (panel Objeto)"));
+                    ui.label(tr(lang, "• Agrupar/Desagrupar; Espejo H/V; Rotar 90°."));
+                    ui.label(tr(lang, "• Alinear (6 direcciones), Distribuir H/V, Matriz (rejilla/círculo)."));
+                    ui.label(tr(lang, "• Shift+clic: añadir objetos a la selección."));
                     ui.add_space(6.0);
 
-                    ui.strong("Edición avanzada");
-                    ui.label("• Snap objetos: al mover, ajusta bordes/centros a otros objetos y a la cama.");
-                    ui.label("• Operaciones: Cerrar trazado, Recortar a la cama, Suavizar nodos (bézier).");
-                    ui.label("• Nodos (✎): arrastra para mover, doble clic borra un nodo o inserta en un tramo.");
-                    ui.label("• Numeración/texto variable: plantilla con # (p.ej. 'Pieza ###').");
-                    ui.label("• Simulación del recorrido: ▶/⏸/⏮, barra de progreso y velocidad.");
+                    ui.strong(tr(lang, "Edición avanzada"));
+                    ui.label(tr(lang, "• Snap objetos: al mover, ajusta bordes/centros a otros objetos y a la cama."));
+                    ui.label(tr(lang, "• Operaciones: Cerrar trazado, Recortar a la cama, Suavizar nodos (bézier)."));
+                    ui.label(tr(lang, "• Nodos (✎): arrastra para mover, doble clic borra un nodo o inserta en un tramo."));
+                    ui.label(tr(lang, "• Numeración/texto variable: plantilla con # (p.ej. 'Pieza ###')."));
+                    ui.label(tr(lang, "• Simulación del recorrido: ▶/⏸/⏮, barra de progreso y velocidad."));
                     ui.add_space(6.0);
 
-                    ui.strong("Cámara y Print&Cut");
-                    ui.label("• Cámara USB en vivo: captura un fotograma (ffmpeg) y calíbralo (4 esquinas).");
-                    ui.label("• Corrección de distorsión de lente (k1/k2) sobre la foto.");
-                    ui.label("• Print&Cut (✛): añade marcas de registro, mide su posición y alinea el corte.");
+                    ui.strong(tr(lang, "Cámara y Print&Cut"));
+                    ui.label(tr(lang, "• Cámara USB en vivo: captura un fotograma (ffmpeg) y calíbralo (4 esquinas)."));
+                    ui.label(tr(lang, "• Corrección de distorsión de lente (k1/k2) sobre la foto."));
+                    ui.label(tr(lang, "• Print&Cut (✛): añade marcas de registro, mide su posición y alinea el corte."));
                     ui.add_space(6.0);
 
-                    ui.strong("Capas y materiales");
-                    ui.label("• Cada capa tiene modo (Línea/Imagen), potencia %, velocidad y pasadas.");
-                    ui.label("• Materiales: presets aplicables a la capa del objeto seleccionado.");
+                    ui.strong(tr(lang, "Capas y materiales"));
+                    ui.label(tr(lang, "• Cada capa tiene modo (Línea/Imagen), potencia %, velocidad y pasadas."));
+                    ui.label(tr(lang, "• Materiales: presets aplicables a la capa del objeto seleccionado."));
                     ui.add_space(6.0);
 
-                    ui.strong("Grabado de imagen");
-                    ui.label("• Ajustes: brillo, contraste, gamma, invertir.");
-                    ui.label("• Tramado: Grises, Umbral, Floyd-Steinberg, Atkinson, Jarvis, Bayer.");
-                    ui.label("• Vectorizar (⌁): traza la imagen a un umbral y crea contornos de corte.");
+                    ui.strong(tr(lang, "Grabado de imagen"));
+                    ui.label(tr(lang, "• Ajustes: brillo, contraste, gamma, invertir."));
+                    ui.label(tr(lang, "• Tramado: Grises, Umbral, Floyd-Steinberg, Atkinson, Jarvis, Bayer."));
+                    ui.label(tr(lang, "• Vectorizar (⌁): traza la imagen a un umbral y crea contornos de corte."));
                     ui.add_space(6.0);
 
-                    ui.strong("Máquina (GRBL)");
-                    ui.label("• Conecta por USB (/dev/ttyUSB0) o WiFi (host:puerto).");
-                    ui.label("• Jog, Home, fijar Origen, Encuadre (framing) a baja potencia.");
-                    ui.label("• Ajustes GRBL: leer/escribir parámetros $$.");
-                    ui.label("• Configuración 🛠: tamaño de cama X/Y y perfiles de otras máquinas.");
+                    ui.strong(tr(lang, "Máquina (GRBL)"));
+                    ui.label(tr(lang, "• Conecta por USB (/dev/ttyUSB0) o WiFi (host:puerto)."));
+                    ui.label(tr(lang, "• Jog, Home, fijar Origen, Encuadre (framing) a baja potencia."));
+                    ui.label(tr(lang, "• Ajustes GRBL: leer/escribir parámetros $$."));
+                    ui.label(tr(lang, "• Configuración 🛠: tamaño de cama X/Y y perfiles de otras máquinas."));
                     ui.add_space(6.0);
 
-                    ui.strong("Flujo recomendado");
-                    ui.label("1. Diseña o importa (SVG/imagen). 2. Asigna capa y parámetros.");
-                    ui.label("3. Genera G-code y revisa el recorrido/tiempo. 4. Conecta, encuadra y envía.");
+                    ui.strong(tr(lang, "Flujo recomendado"));
+                    ui.label(tr(lang, "1. Diseña o importa (SVG/imagen). 2. Asigna capa y parámetros."));
+                    ui.label(tr(lang, "3. Genera G-code y revisa el recorrido/tiempo. 4. Conecta, encuadra y envía."));
                     ui.add_space(6.0);
-                    ui.weak("⚠ Seguridad: usa gafas adecuadas, ventilación y nunca dejes el láser sin vigilancia.");
+                    ui.weak(tr(lang, "⚠ Seguridad: usa gafas adecuadas, ventilación y nunca dejes el láser sin vigilancia."));
                 });
             });
         self.show_help = open;
@@ -1553,6 +1565,7 @@ impl RustburnApp {
 
     /// Bottom status bar: layer colour palette + cursor read-out + selection info.
     fn status_bar_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
         ui.horizontal_centered(|ui| {
             // Current layer of the selected object (for the outline highlight).
             let cur_layer = self.doc.selected.and_then(|i| self.doc.objects.get(i)).map(|o| o.layer);
@@ -1606,7 +1619,7 @@ impl RustburnApp {
             }
             if self.tool == Tool::Measure {
                 ui.separator();
-                ui.label("📏 Medir: clic en 2 puntos");
+                ui.label(tr(lang, "📏 Medir: clic en 2 puntos"));
             }
         });
     }
@@ -1615,47 +1628,49 @@ impl RustburnApp {
         if !self.show_array {
             return;
         }
+        let lang = self.lang;
         let mut open = self.show_array;
         let mut apply = false;
-        egui::Window::new("▦ Matriz / Array")
+        egui::Window::new(tr(lang, "▦ Matriz / Array"))
+            .id(egui::Id::new("array_window"))
             .open(&mut open)
             .default_width(280.0)
             .show(ctx, |ui| {
-                ui.label("Duplica la selección en rejilla o en círculo.");
+                ui.label(tr(lang, "Duplica la selección en rejilla o en círculo."));
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.array_circular, false, "▦ Rejilla");
-                    ui.selectable_value(&mut self.array_circular, true, "◯ Circular");
+                    ui.selectable_value(&mut self.array_circular, false, tr(lang, "▦ Rejilla"));
+                    ui.selectable_value(&mut self.array_circular, true, tr(lang, "◯ Circular"));
                 });
                 ui.add_space(4.0);
                 if self.array_circular {
                     egui::Grid::new("arr_circ").num_columns(2).show(ui, |ui| {
-                        ui.label("Copias");
+                        ui.label(tr(lang, "Copias"));
                         ui.add(egui::DragValue::new(&mut self.array_count).range(2..=200));
                         ui.end_row();
-                        ui.label("Radio (mm)");
+                        ui.label(tr(lang, "Radio (mm)"));
                         ui.add(egui::DragValue::new(&mut self.array_radius).range(1.0..=1000.0).speed(0.5));
                         ui.end_row();
                     });
-                    ui.weak("Centro: el radio por encima de la selección.");
+                    ui.weak(tr(lang, "Centro: el radio por encima de la selección."));
                 } else {
                     egui::Grid::new("arr_grid").num_columns(2).show(ui, |ui| {
-                        ui.label("Columnas");
+                        ui.label(tr(lang, "Columnas"));
                         ui.add(egui::DragValue::new(&mut self.array_cols).range(1..=100));
                         ui.end_row();
-                        ui.label("Filas");
+                        ui.label(tr(lang, "Filas"));
                         ui.add(egui::DragValue::new(&mut self.array_rows).range(1..=100));
                         ui.end_row();
-                        ui.label("Separación X (mm)");
+                        ui.label(tr(lang, "Separación X (mm)"));
                         ui.add(egui::DragValue::new(&mut self.array_dx).speed(0.5));
                         ui.end_row();
-                        ui.label("Separación Y (mm)");
+                        ui.label(tr(lang, "Separación Y (mm)"));
                         ui.add(egui::DragValue::new(&mut self.array_dy).speed(0.5));
                         ui.end_row();
                     });
                 }
                 ui.separator();
-                if ui.button("✅ Aplicar").clicked() {
+                if ui.button(tr(lang, "✅ Aplicar")).clicked() {
                     apply = true;
                 }
             });
@@ -1754,32 +1769,34 @@ impl RustburnApp {
         if !self.show_printcut {
             return;
         }
+        let lang = self.lang;
         let mut open = self.show_printcut;
-        egui::Window::new("✛ Print & Cut")
+        egui::Window::new(tr(lang, "✛ Print & Cut"))
+            .id(egui::Id::new("printcut_window"))
             .open(&mut open)
             .default_width(360.0)
             .show(ctx, |ui| {
-                ui.label("Corta sobre una impresión ya existente alineando el láser a marcas de registro.");
-                ui.weak("1) Añade marcas y expórtalas/imprímelas con el diseño.");
-                ui.weak("2) Coloca la hoja impresa en la cama.");
-                ui.weak("3) Haz jog del cabezal a cada marca y anota su X/Y de máquina.");
-                ui.weak("4) Calcula la alineación y genera el corte.");
+                ui.label(tr(lang, "Corta sobre una impresión ya existente alineando el láser a marcas de registro."));
+                ui.weak(tr(lang, "1) Añade marcas y expórtalas/imprímelas con el diseño."));
+                ui.weak(tr(lang, "2) Coloca la hoja impresa en la cama."));
+                ui.weak(tr(lang, "3) Haz jog del cabezal a cada marca y anota su X/Y de máquina."));
+                ui.weak(tr(lang, "4) Calcula la alineación y genera el corte."));
                 ui.separator();
-                if ui.button("✛ Añadir marcas de registro").clicked() {
+                if ui.button(tr(lang, "✛ Añadir marcas de registro")).clicked() {
                     self.add_registration_marks();
                 }
                 if self.pc_marks.is_empty() {
-                    ui.weak("Sin marcas todavía.");
+                    ui.weak(tr(lang, "Sin marcas todavía."));
                 } else {
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new("Marcas: diseño → medida (máquina)").strong());
+                    ui.label(egui::RichText::new(tr(lang, "Marcas: diseño → medida (máquina)")).strong());
                     egui::Grid::new("pc_marks_grid")
                         .num_columns(3)
                         .striped(true)
                         .show(ui, |ui| {
-                            ui.label("Diseño (mm)");
-                            ui.label("X máquina");
-                            ui.label("Y máquina");
+                            ui.label(tr(lang, "Diseño (mm)"));
+                            ui.label(tr(lang, "X máquina"));
+                            ui.label(tr(lang, "Y máquina"));
                             ui.end_row();
                             for (i, mk) in self.pc_marks.iter().enumerate() {
                                 ui.label(format!("{:.1}, {:.1}", mk.x, mk.y));
@@ -1791,17 +1808,17 @@ impl RustburnApp {
                             }
                         });
                     ui.add_space(4.0);
-                    if ui.button("📐 Calcular alineación").clicked() {
+                    if ui.button(tr(lang, "📐 Calcular alineación")).clicked() {
                         self.compute_printcut_alignment();
                     }
                     let has = self.pc_transform.is_some();
                     ui.add_enabled_ui(has, |ui| {
-                        ui.checkbox(&mut self.pc_apply, "Aplicar alineación al corte");
+                        ui.checkbox(&mut self.pc_apply, tr(lang, "Aplicar alineación al corte"));
                     });
                     if has {
-                        ui.weak("La alineación se aplica al generar G-code.");
+                        ui.weak(tr(lang, "La alineación se aplica al generar G-code."));
                     } else {
-                        ui.weak("Aún sin alineación calculada.");
+                        ui.weak(tr(lang, "Aún sin alineación calculada."));
                     }
                 }
             });
@@ -1893,15 +1910,16 @@ impl eframe::App for RustburnApp {
 // --- Toolbar -----------------------------------------------------------------
 impl RustburnApp {
     fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
         ui.horizontal_wrapped(|ui| {
             if ui
-                .button("🗋 Nuevo proyecto")
-                .on_hover_text("Vaciar y empezar de cero (Ctrl+Z para deshacer)")
+                .button(tr(lang, "🗋 Nuevo proyecto"))
+                .on_hover_text(tr(lang, "Vaciar y empezar de cero (Ctrl+Z para deshacer)"))
                 .clicked()
             {
                 self.new_project();
             }
-            if ui.button("📂 Abrir proyecto").clicked() {
+            if ui.button(tr(lang, "📂 Abrir proyecto")).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("Proyecto rustburn", &["rbp", "json"])
                     .pick_file()
@@ -1917,7 +1935,7 @@ impl RustburnApp {
                     }
                 }
             }
-            if ui.button("💾 Guardar proyecto").clicked() {
+            if ui.button(tr(lang, "💾 Guardar proyecto")).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("Proyecto rustburn", &["rbp"])
                     .set_file_name("proyecto.rbp")
@@ -1943,7 +1961,7 @@ impl RustburnApp {
                 self.redo();
             }
             ui.separator();
-            if ui.button("➕ Importar SVG").clicked() {
+            if ui.button(tr(lang, "➕ Importar SVG")).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("SVG", &["svg"])
                     .pick_file()
@@ -1961,7 +1979,7 @@ impl RustburnApp {
                     }
                 }
             }
-            if ui.button("🖼 Importar imagen").clicked() {
+            if ui.button(tr(lang, "🖼 Importar imagen")).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("Imagen", &["png", "jpg", "jpeg", "webp", "bmp", "gif"])
                     .pick_file()
@@ -1979,18 +1997,18 @@ impl RustburnApp {
                     }
                 }
             }
-            ui.menu_button("📄 Importar PDF", |ui| {
+            ui.menu_button(tr(lang, "📄 Importar PDF"), |ui| {
                 if ui
-                    .button("✒ Como vectores (corte)")
-                    .on_hover_text("Convierte los trazos del PDF a vectores (pdftocairo/inkscape).")
+                    .button(tr(lang, "✒ Como vectores (corte)"))
+                    .on_hover_text(tr(lang, "Convierte los trazos del PDF a vectores (pdftocairo/inkscape)."))
                     .clicked()
                 {
                     ui.close_menu();
                     self.import_pdf(false);
                 }
                 if ui
-                    .button("🖼 Como imagen (grabado)")
-                    .on_hover_text("Rasteriza la 1ª página; luego puedes vectorizarla (poppler/ghostscript).")
+                    .button(tr(lang, "🖼 Como imagen (grabado)"))
+                    .on_hover_text(tr(lang, "Rasteriza la 1ª página; luego puedes vectorizarla (poppler/ghostscript)."))
                     .clicked()
                 {
                     ui.close_menu();
@@ -1998,10 +2016,10 @@ impl RustburnApp {
                 }
             });
             ui.separator();
-            if ui.button("⚙ Generar G-code").clicked() {
+            if ui.button(tr(lang, "⚙ Generar G-code")).clicked() {
                 self.generate_gcode();
             }
-            ui.toggle_value(&mut self.show_toolpath, "👁 Recorrido");
+            ui.toggle_value(&mut self.show_toolpath, tr(lang, "👁 Recorrido"));
             // Toolpath simulation controls.
             {
                 let has_tp = self.toolpath.is_some();
@@ -2032,13 +2050,13 @@ impl RustburnApp {
                     ui.weak(format!("{:.0}%", 100.0 * self.sim_pos_mm / total));
                 }
             }
-            ui.toggle_value(&mut self.show_mat_test, "🔥 Test material");
-            ui.toggle_value(&mut self.show_printcut, "✛ Print&Cut")
-                .on_hover_text("Marcas de registro y alineación de corte sobre impresión");
-            ui.toggle_value(&mut self.show_grbl, "⚙ Ajustes GRBL");
-            ui.toggle_value(&mut self.show_config, "🛠 Configuración");
-            ui.toggle_value(&mut self.show_help, "❓ Ayuda");
-            if ui.add_enabled(!self.gcode.is_empty(), egui::Button::new("⬇ Guardar .nc"))
+            ui.toggle_value(&mut self.show_mat_test, tr(lang, "🔥 Test material"));
+            ui.toggle_value(&mut self.show_printcut, tr(lang, "✛ Print&Cut"))
+                .on_hover_text(tr(lang, "Marcas de registro y alineación de corte sobre impresión"));
+            ui.toggle_value(&mut self.show_grbl, tr(lang, "⚙ Ajustes GRBL"));
+            ui.toggle_value(&mut self.show_config, tr(lang, "🛠 Configuración"));
+            ui.toggle_value(&mut self.show_help, tr(lang, "❓ Ayuda"));
+            if ui.add_enabled(!self.gcode.is_empty(), egui::Button::new(tr(lang, "⬇ Guardar .nc")))
                 .clicked()
             {
                 if let Some(path) = rfd::FileDialog::new()
@@ -2054,7 +2072,7 @@ impl RustburnApp {
                 }
             }
             ui.separator();
-            ui.toggle_value(&mut self.snap, "🧲 Rejilla").on_hover_text("Ajustar a la cuadrícula");
+            ui.toggle_value(&mut self.snap, tr(lang, "🧲 Rejilla")).on_hover_text(tr(lang, "Ajustar a la cuadrícula"));
             if self.snap {
                 ui.add(
                     egui::DragValue::new(&mut self.snap_step)
@@ -2063,8 +2081,16 @@ impl RustburnApp {
                         .suffix(" mm"),
                 );
             }
-            ui.toggle_value(&mut self.snap_objects, "🎯 Snap objetos")
-                .on_hover_text("Ajustar bordes/centros a otros objetos y a la cama");
+            ui.toggle_value(&mut self.snap_objects, tr(lang, "🎯 Snap objetos"))
+                .on_hover_text(tr(lang, "Ajustar bordes/centros a otros objetos y a la cama"));
+            ui.separator();
+            // Language selector.
+            egui::ComboBox::from_id_salt("lang_pick")
+                .selected_text(self.lang.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.lang, crate::i18n::Lang::Es, "Español");
+                    ui.selectable_value(&mut self.lang, crate::i18n::Lang::En, "English");
+                });
             ui.separator();
             ui.label(egui::RichText::new(&self.status_msg).italics().weak());
         });
@@ -2090,44 +2116,45 @@ impl RustburnApp {
     }
 
     fn cam_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Cámara / foto");
+        let lang = self.lang;
+        ui.heading(tr(lang, "Cámara / foto"));
         let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
-            ui.label("Dispositivo:");
+            ui.label(tr(lang, "Dispositivo:"));
             ui.add(egui::TextEdit::singleline(&mut self.cam_device).desired_width(110.0));
         });
         ui.horizontal(|ui| {
-            if ui.button("📸 Capturar cámara USB")
-                .on_hover_text("Captura un fotograma del dispositivo V4L2 con ffmpeg")
+            if ui.button(tr(lang, "📸 Capturar cámara USB"))
+                .on_hover_text(tr(lang, "Captura un fotograma del dispositivo V4L2 con ffmpeg"))
                 .clicked()
             {
                 self.capture_cam_frame(&ctx);
             }
-            if ui.button("📷 Cargar foto").clicked() {
+            if ui.button(tr(lang, "📷 Cargar foto")).clicked() {
                 self.load_cam_photo(&ctx);
             }
         });
         if self.cam_photo.is_some() {
             let label = if self.calibrating {
-                "… clic en 4 esquinas"
+                tr(lang, "… clic en 4 esquinas")
             } else {
-                "🎯 Calibrar (4 esquinas)"
+                tr(lang, "🎯 Calibrar (4 esquinas)")
             };
             if ui.button(label).clicked() {
                 self.calibrating = true;
                 self.cal_points.clear();
             }
-            ui.checkbox(&mut self.cam_show, "Mostrar superposición");
-            ui.add(egui::Slider::new(&mut self.cam_opacity, 0.0..=1.0).text("Opacidad"));
+            ui.checkbox(&mut self.cam_show, tr(lang, "Mostrar superposición"));
+            ui.add(egui::Slider::new(&mut self.cam_opacity, 0.0..=1.0).text(tr(lang, "Opacidad")));
             // Lens distortion correction (radial k1/k2).
-            ui.collapsing("Distorsión de lente", |ui| {
-                ui.weak("Corrige barril (−) o cojín (+)");
+            ui.collapsing(tr(lang, "Distorsión de lente"), |ui| {
+                ui.weak(tr(lang, "Corrige barril (−) o cojín (+)"));
                 let mut dirty = false;
                 let r = ui.add(egui::Slider::new(&mut self.cam_k1, -0.5..=0.5).text("k1"));
                 dirty |= r.changed();
                 let r = ui.add(egui::Slider::new(&mut self.cam_k2, -0.3..=0.3).text("k2"));
                 dirty |= r.changed();
-                if ui.button("↺ Sin distorsión").clicked() {
+                if ui.button(tr(lang, "↺ Sin distorsión")).clicked() {
                     self.cam_k1 = 0.0;
                     self.cam_k2 = 0.0;
                     dirty = true;
@@ -2136,7 +2163,7 @@ impl RustburnApp {
                     self.rebuild_cam_correction(&ctx);
                 }
             });
-            if ui.button("🗑 Quitar foto").clicked() {
+            if ui.button(tr(lang, "🗑 Quitar foto")).clicked() {
                 self.cam_orig = None;
                 self.cam_photo = None;
                 self.cam_tex = None;
@@ -2145,17 +2172,18 @@ impl RustburnApp {
                 self.calibrating = false;
             }
             if self.calibrating {
-                ui.weak(format!("Marca la esquina {} de 4", self.cal_points.len() + 1));
+                ui.weak(format!("{} {} {}", tr(lang, "Marca la esquina"), self.cal_points.len() + 1, tr(lang, "de 4")));
                 ui.weak("Orden: (0,0) → (X,0) → (X,Y) → (0,Y)");
             }
         } else {
-            ui.weak("Carga una foto del tablero para alinear el diseño por perspectiva.");
+            ui.weak(tr(lang, "Carga una foto del tablero para alinear el diseño por perspectiva."));
         }
     }
 
     fn materials_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Materiales");
-        ui.weak("▶ aplica a la capa del objeto seleccionado");
+        let lang = self.lang;
+        ui.heading(tr(lang, "Materiales"));
+        ui.weak(tr(lang, "▶ aplica a la capa del objeto seleccionado"));
         let mut apply = None;
         let mut del = None;
         egui::ScrollArea::vertical()
@@ -2183,10 +2211,10 @@ impl RustburnApp {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_material_name)
-                    .hint_text("Nombre nuevo")
+                    .hint_text(tr(lang, "Nombre nuevo"))
                     .desired_width(140.0),
             );
-            if ui.button("＋ Guardar capa").clicked() {
+            if ui.button(tr(lang, "＋ Guardar capa")).clicked() {
                 self.save_current_material();
             }
         });
@@ -2196,42 +2224,44 @@ impl RustburnApp {
         if !self.show_mat_test {
             return;
         }
+        let lang = self.lang;
         let mut open = self.show_mat_test;
         let mut gen = false;
-        egui::Window::new("🔥 Test de material")
+        egui::Window::new(tr(lang, "🔥 Test de material"))
+            .id(egui::Id::new("mat_test_window"))
             .open(&mut open)
             .resizable(false)
             .show(ctx, |ui| {
                 let t = &mut self.mat_test;
                 egui::Grid::new("mattest").num_columns(2).show(ui, |ui| {
-                    ui.label("Columnas (potencia)");
+                    ui.label(tr(lang, "Columnas (potencia)"));
                     ui.add(egui::DragValue::new(&mut t.cols).range(1..=12));
                     ui.end_row();
-                    ui.label("Filas (velocidad)");
+                    ui.label(tr(lang, "Filas (velocidad)"));
                     ui.add(egui::DragValue::new(&mut t.rows).range(1..=12));
                     ui.end_row();
-                    ui.label("Potencia mín/máx %");
+                    ui.label(tr(lang, "Potencia mín/máx %"));
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut t.min_power).range(0.0..=100.0));
                         ui.add(egui::DragValue::new(&mut t.max_power).range(0.0..=100.0));
                     });
                     ui.end_row();
-                    ui.label("Velocidad mín/máx");
+                    ui.label(tr(lang, "Velocidad mín/máx"));
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut t.min_speed).range(1.0..=20000.0));
                         ui.add(egui::DragValue::new(&mut t.max_speed).range(1.0..=20000.0));
                     });
                     ui.end_row();
-                    ui.label("Celda / separación (mm)");
+                    ui.label(tr(lang, "Celda / separación (mm)"));
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut t.cell_mm).range(2.0..=50.0));
                         ui.add(egui::DragValue::new(&mut t.gap_mm).range(0.0..=30.0));
                     });
                     ui.end_row();
-                    ui.label("Intervalo relleno (mm)");
+                    ui.label(tr(lang, "Intervalo relleno (mm)"));
                     ui.add(egui::DragValue::new(&mut t.interval_mm).range(0.05..=1.0).speed(0.01));
                     ui.end_row();
-                    ui.label("Origen X / Y (mm)");
+                    ui.label(tr(lang, "Origen X / Y (mm)"));
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut t.origin_x));
                         ui.add(egui::DragValue::new(&mut t.origin_y));
@@ -2239,10 +2269,10 @@ impl RustburnApp {
                     ui.end_row();
                 });
                 ui.separator();
-                if ui.button("⚙ Generar test → G-code").clicked() {
+                if ui.button(tr(lang, "⚙ Generar test → G-code")).clicked() {
                     gen = true;
                 }
-                ui.weak("Luego: Guardar .nc o Iniciar (conectado).");
+                ui.weak(tr(lang, "Luego: Guardar .nc o Iniciar (conectado)."));
             });
         self.show_mat_test = open;
         if gen {
@@ -2251,37 +2281,39 @@ impl RustburnApp {
     }
 
     fn machine_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Máquina");
+        let lang = self.lang;
+        ui.heading(tr(lang, "Máquina"));
         let m = &mut self.doc.machine;
         egui::Grid::new("machine").num_columns(2).show(ui, |ui| {
-            ui.label("Cama X (mm)");
+            ui.label(tr(lang, "Cama X (mm)"));
             ui.add(egui::DragValue::new(&mut m.bed_w_mm).range(10.0..=2000.0));
             ui.end_row();
-            ui.label("Cama Y (mm)");
+            ui.label(tr(lang, "Cama Y (mm)"));
             ui.add(egui::DragValue::new(&mut m.bed_h_mm).range(10.0..=2000.0));
             ui.end_row();
-            ui.label("S máx ($30)");
+            ui.label(tr(lang, "S máx ($30)"));
             ui.add(egui::DragValue::new(&mut m.s_max).range(1.0..=100000.0));
             ui.end_row();
-            ui.label("Velocidad viaje");
+            ui.label(tr(lang, "Velocidad viaje"));
             ui.add(egui::DragValue::new(&mut m.travel_speed).range(100.0..=60000.0));
             ui.end_row();
         });
         ui.horizontal(|ui| {
-            ui.label("Modo láser:");
-            ui.selectable_value(&mut m.laser_mode, crate::model::LaserMode::Dynamic, "M4 dinámico");
-            ui.selectable_value(&mut m.laser_mode, crate::model::LaserMode::Constant, "M3");
+            ui.label(tr(lang, "Modo láser:"));
+            ui.selectable_value(&mut m.laser_mode, crate::model::LaserMode::Dynamic, tr(lang, "M4 dinámico"));
+            ui.selectable_value(&mut m.laser_mode, crate::model::LaserMode::Constant, tr(lang, "M3"));
         });
         ui.horizontal(|ui| {
-            ui.label("Origen:");
-            ui.selectable_value(&mut m.origin, crate::model::Origin::FrontLeft, "Frontal-izq");
-            ui.selectable_value(&mut m.origin, crate::model::Origin::TopLeft, "Superior-izq");
+            ui.label(tr(lang, "Origen:"));
+            ui.selectable_value(&mut m.origin, crate::model::Origin::FrontLeft, tr(lang, "Frontal-izq"));
+            ui.selectable_value(&mut m.origin, crate::model::Origin::TopLeft, tr(lang, "Superior-izq"));
         });
-        ui.checkbox(&mut m.optimize_travel, "Optimizar recorrido (menos viajes)");
+        ui.checkbox(&mut m.optimize_travel, tr(lang, "Optimizar recorrido (menos viajes)"));
     }
 
     fn layers_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Capas");
+        let lang = self.lang;
+        ui.heading(tr(lang, "Capas"));
         let mut set_mode: Option<(usize, CutMode)> = None;
         for (i, layer) in self.doc.layers.iter_mut().enumerate() {
             ui.group(|ui| {
@@ -2290,19 +2322,19 @@ impl RustburnApp {
                     ui.text_edit_singleline(&mut layer.name);
                 });
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut layer.visible, "Visible");
-                    ui.checkbox(&mut layer.output, "Salida");
+                    ui.checkbox(&mut layer.visible, tr(lang, "Visible"));
+                    ui.checkbox(&mut layer.output, tr(lang, "Salida"));
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Modo:");
+                    ui.label(tr(lang, "Modo:"));
                     if ui
-                        .selectable_label(layer.settings.mode == CutMode::Line, "Línea")
+                        .selectable_label(layer.settings.mode == CutMode::Line, tr(lang, "Línea"))
                         .clicked()
                     {
                         set_mode = Some((i, CutMode::Line));
                     }
                     if ui
-                        .selectable_label(layer.settings.mode == CutMode::Image, "Imagen")
+                        .selectable_label(layer.settings.mode == CutMode::Image, tr(lang, "Imagen"))
                         .clicked()
                     {
                         set_mode = Some((i, CutMode::Image));
@@ -2310,30 +2342,30 @@ impl RustburnApp {
                 });
                 let s = &mut layer.settings;
                 egui::Grid::new(("layer_grid", i)).num_columns(2).show(ui, |ui| {
-                    ui.label("Potencia %");
+                    ui.label(tr(lang, "Potencia %"));
                     ui.add(egui::DragValue::new(&mut s.power_pct).range(0.0..=100.0).suffix(" %"));
                     ui.end_row();
-                    ui.label("Velocidad");
+                    ui.label(tr(lang, "Velocidad"));
                     ui.add(egui::DragValue::new(&mut s.speed).range(1.0..=60000.0).suffix(" mm/min"));
                     ui.end_row();
                     if s.mode == CutMode::Line {
-                        ui.label("Pasadas");
+                        ui.label(tr(lang, "Pasadas"));
                         ui.add(egui::DragValue::new(&mut s.passes).range(1..=50));
                         ui.end_row();
                     } else {
-                        ui.label("Intervalo");
+                        ui.label(tr(lang, "Intervalo"));
                         ui.add(egui::DragValue::new(&mut s.line_interval_mm).range(0.02..=1.0).speed(0.01).suffix(" mm"));
                         ui.end_row();
-                        ui.label("Overscan");
+                        ui.label(tr(lang, "Overscan"));
                         ui.add(egui::DragValue::new(&mut s.overscan_mm).range(0.0..=20.0).suffix(" mm"));
                         ui.end_row();
                     }
                 });
                 if s.mode == CutMode::Image {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label("Tramado:");
-                        ui.selectable_value(&mut s.dither, Dither::Grayscale, "Grises");
-                        ui.selectable_value(&mut s.dither, Dither::Threshold, "Umbral");
+                        ui.label(tr(lang, "Tramado:"));
+                        ui.selectable_value(&mut s.dither, Dither::Grayscale, tr(lang, "Grises"));
+                        ui.selectable_value(&mut s.dither, Dither::Threshold, tr(lang, "Umbral"));
                         ui.selectable_value(&mut s.dither, Dither::FloydSteinberg, "F-S");
                         ui.selectable_value(&mut s.dither, Dither::Atkinson, "Atkinson");
                         ui.selectable_value(&mut s.dither, Dither::Jarvis, "Jarvis");
@@ -2345,19 +2377,20 @@ impl RustburnApp {
         if let Some((i, mode)) = set_mode {
             self.doc.layers[i].settings.mode = mode;
         }
-        if ui.button("➕ Añadir capa").clicked() {
+        if ui.button(tr(lang, "➕ Añadir capa")).clicked() {
             let n = self.doc.layers.len();
             let colors = [[200, 30, 30], [30, 90, 220], [20, 160, 60], [210, 150, 20]];
             self.doc
                 .layers
-                .push(crate::model::Layer::new(format!("Capa {}", n + 1), colors[n % 4]));
+                .push(crate::model::Layer::new(format!("{} {}", tr(lang, "Capa"), n + 1), colors[n % 4]));
         }
     }
 
     fn properties_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Objeto");
+        let lang = self.lang;
+        ui.heading(tr(lang, "Objeto"));
         let Some(idx) = self.doc.selected else {
-            ui.weak("Ningún objeto seleccionado.");
+            ui.weak(tr(lang, "Ningún objeto seleccionado."));
             return;
         };
         if idx >= self.doc.objects.len() {
@@ -2375,25 +2408,25 @@ impl RustburnApp {
 
         {
             let obj = &mut self.doc.objects[idx];
-            ui.label(format!("Nombre: {}", obj.name));
+            ui.label(format!("{} {}", tr(lang, "Nombre:"), obj.name));
             let (bw, bh) = obj
                 .local_bbox()
                 .map(|b| (b.width().max(1e-6), b.height().max(1e-6)))
                 .unwrap_or((1.0, 1.0));
 
             egui::Grid::new("obj_props").num_columns(2).show(ui, |ui| {
-                ui.label("X (mm)");
+                ui.label(tr(lang, "X (mm)"));
                 let r = ui.add(egui::DragValue::new(&mut obj.pos.x).speed(0.5));
                 began |= r.drag_started() || r.gained_focus();
                 ui.end_row();
-                ui.label("Y (mm)");
+                ui.label(tr(lang, "Y (mm)"));
                 let r = ui.add(egui::DragValue::new(&mut obj.pos.y).speed(0.5));
                 began |= r.drag_started() || r.gained_focus();
                 ui.end_row();
 
                 let mut w = bw * obj.scale.x;
                 let mut h = bh * obj.scale.y;
-                ui.label("Ancho (mm)");
+                ui.label(tr(lang, "Ancho (mm)"));
                 let r = ui.add(egui::DragValue::new(&mut w).speed(0.3).range(0.1..=2000.0));
                 began |= r.drag_started() || r.gained_focus();
                 if r.changed() {
@@ -2405,7 +2438,7 @@ impl RustburnApp {
                     obj.scale.x = new_sx;
                 }
                 ui.end_row();
-                ui.label("Alto (mm)");
+                ui.label(tr(lang, "Alto (mm)"));
                 let r = ui.add(egui::DragValue::new(&mut h).speed(0.3).range(0.1..=2000.0));
                 began |= r.drag_started() || r.gained_focus();
                 if r.changed() {
@@ -2417,7 +2450,7 @@ impl RustburnApp {
                     obj.scale.y = new_sy;
                 }
                 ui.end_row();
-                ui.label("Rotación");
+                ui.label(tr(lang, "Rotación"));
                 let r = ui.add(
                     egui::DragValue::new(&mut obj.rotation)
                         .speed(0.5)
@@ -2428,12 +2461,12 @@ impl RustburnApp {
             });
 
             ui.horizontal(|ui| {
-                ui.label("Capa:");
+                ui.label(tr(lang, "Capa:"));
                 egui::ComboBox::from_id_salt("obj_layer")
-                    .selected_text(format!("Capa {}", obj.layer + 1))
+                    .selected_text(format!("{} {}", tr(lang, "Capa"), obj.layer + 1))
                     .show_ui(ui, |ui| {
                         for l in 0..nlayers {
-                            let r = ui.selectable_value(&mut obj.layer, l, format!("Capa {}", l + 1));
+                            let r = ui.selectable_value(&mut obj.layer, l, format!("{} {}", tr(lang, "Capa"), l + 1));
                             began |= r.clicked();
                         }
                     });
@@ -2444,50 +2477,50 @@ impl RustburnApp {
                     img.width_px, img.height_px, img.width_mm, img.height_mm
                 ));
                 ui.separator();
-                ui.label("Ajustes de imagen");
+                ui.label(tr(lang, "Ajustes de imagen"));
                 let a = &mut img.adjust;
                 egui::Grid::new("img_adj").num_columns(2).show(ui, |ui| {
-                    ui.label("Brillo");
+                    ui.label(tr(lang, "Brillo"));
                     let r = ui.add(egui::Slider::new(&mut a.brightness, -100.0..=100.0));
                     began |= r.drag_started();
                     img_dirty |= r.changed();
                     ui.end_row();
-                    ui.label("Contraste");
+                    ui.label(tr(lang, "Contraste"));
                     let r = ui.add(egui::Slider::new(&mut a.contrast, -100.0..=100.0));
                     began |= r.drag_started();
                     img_dirty |= r.changed();
                     ui.end_row();
-                    ui.label("Gamma");
+                    ui.label(tr(lang, "Gamma"));
                     let r = ui.add(egui::Slider::new(&mut a.gamma, 0.1..=5.0).logarithmic(true));
                     began |= r.drag_started();
                     img_dirty |= r.changed();
                     ui.end_row();
                 });
-                let r = ui.checkbox(&mut a.invert, "Invertir");
+                let r = ui.checkbox(&mut a.invert, tr(lang, "Invertir"));
                 began |= r.clicked();
                 img_dirty |= r.changed();
-                if ui.button("↺ Restablecer ajustes").clicked() {
+                if ui.button(tr(lang, "↺ Restablecer ajustes")).clicked() {
                     *a = Default::default();
                     began = true;
                     img_dirty = true;
                 }
                 ui.separator();
-                ui.label(egui::RichText::new("Vectorizar (trazar)").strong());
-                ui.weak("Convierte la imagen en contornos de corte");
+                ui.label(egui::RichText::new(tr(lang, "Vectorizar (trazar)")).strong());
+                ui.weak(tr(lang, "Convierte la imagen en contornos de corte"));
                 egui::Grid::new("trace_opts").num_columns(2).show(ui, |ui| {
-                    ui.label("Umbral");
+                    ui.label(tr(lang, "Umbral"));
                     ui.add(egui::Slider::new(&mut self.trace_threshold, 1..=254));
                     ui.end_row();
-                    ui.label("Suavizado");
+                    ui.label(tr(lang, "Suavizado"));
                     ui.add(
                         egui::Slider::new(&mut self.trace_simplify, 0.0..=2.0).suffix(" mm"),
                     );
                     ui.end_row();
                 });
-                ui.checkbox(&mut self.trace_invert, "Invertir (trazar lo claro)");
+                ui.checkbox(&mut self.trace_invert, tr(lang, "Invertir (trazar lo claro)"));
                 if ui
-                    .button("⌁ Vectorizar imagen")
-                    .on_hover_text("Traza los bordes a este umbral y crea un objeto vectorial")
+                    .button(tr(lang, "⌁ Vectorizar imagen"))
+                    .on_hover_text(tr(lang, "Traza los bordes a este umbral y crea un objeto vectorial"))
                     .clicked()
                 {
                     do_trace = true;
@@ -2510,22 +2543,22 @@ impl RustburnApp {
             self.future.clear();
         }
 
-        ui.checkbox(&mut self.lock_ratio, "Mantener proporción");
+        ui.checkbox(&mut self.lock_ratio, tr(lang, "Mantener proporción"));
 
         // --- Organizar: agrupar, espejo, rotar, alinear ---
         let mut act: Option<ArrangeAct> = None;
         ui.separator();
-        ui.label(egui::RichText::new("Organizar").strong());
+        ui.label(egui::RichText::new(tr(lang, "Organizar")).strong());
         let grouped = self.any_grouped_selected();
         let multi_sel = self.selected_indices().len() >= 2;
         ui.horizontal(|ui| {
-            if ui.add_enabled(multi_sel, egui::Button::new("🔗 Agrupar"))
-                .on_hover_text("Ctrl+G · agrupa la selección (Shift+clic añade objetos)")
+            if ui.add_enabled(multi_sel, egui::Button::new(tr(lang, "🔗 Agrupar")))
+                .on_hover_text(tr(lang, "Ctrl+G · agrupa la selección (Shift+clic añade objetos)"))
                 .clicked()
             {
                 act = Some(ArrangeAct::Group);
             }
-            if ui.add_enabled(grouped, egui::Button::new("✂ Desagrupar"))
+            if ui.add_enabled(grouped, egui::Button::new(tr(lang, "✂ Desagrupar")))
                 .on_hover_text("Ctrl+Shift+G")
                 .clicked()
             {
@@ -2533,57 +2566,57 @@ impl RustburnApp {
             }
         });
         ui.horizontal(|ui| {
-            if ui.button("⬌ Espejo H").clicked() {
+            if ui.button(tr(lang, "⬌ Espejo H")).clicked() {
                 act = Some(ArrangeAct::MirrorH);
             }
-            if ui.button("⬍ Espejo V").clicked() {
+            if ui.button(tr(lang, "⬍ Espejo V")).clicked() {
                 act = Some(ArrangeAct::MirrorV);
             }
-            if ui.button("⟳ 90°").clicked() {
+            if ui.button(tr(lang, "⟳ 90°")).clicked() {
                 act = Some(ArrangeAct::Rotate90);
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Alinear:");
-            if ui.add_enabled(multi_sel, egui::Button::new("⬅")).on_hover_text("Izquierda").clicked() {
+            ui.label(tr(lang, "Alinear:"));
+            if ui.add_enabled(multi_sel, egui::Button::new("⬅")).on_hover_text(tr(lang, "Izquierda")).clicked() {
                 act = Some(ArrangeAct::Align(0, -1));
             }
-            if ui.add_enabled(multi_sel, egui::Button::new("⬌")).on_hover_text("Centro X").clicked() {
+            if ui.add_enabled(multi_sel, egui::Button::new("⬌")).on_hover_text(tr(lang, "Centro X")).clicked() {
                 act = Some(ArrangeAct::Align(0, 0));
             }
-            if ui.add_enabled(multi_sel, egui::Button::new("➡")).on_hover_text("Derecha").clicked() {
+            if ui.add_enabled(multi_sel, egui::Button::new("➡")).on_hover_text(tr(lang, "Derecha")).clicked() {
                 act = Some(ArrangeAct::Align(0, 1));
             }
-            if ui.add_enabled(multi_sel, egui::Button::new("⬆")).on_hover_text("Arriba").clicked() {
+            if ui.add_enabled(multi_sel, egui::Button::new("⬆")).on_hover_text(tr(lang, "Arriba")).clicked() {
                 act = Some(ArrangeAct::Align(1, -1));
             }
-            if ui.add_enabled(multi_sel, egui::Button::new("⬍")).on_hover_text("Centro Y").clicked() {
+            if ui.add_enabled(multi_sel, egui::Button::new("⬍")).on_hover_text(tr(lang, "Centro Y")).clicked() {
                 act = Some(ArrangeAct::Align(1, 0));
             }
-            if ui.add_enabled(multi_sel, egui::Button::new("⬇")).on_hover_text("Abajo").clicked() {
+            if ui.add_enabled(multi_sel, egui::Button::new("⬇")).on_hover_text(tr(lang, "Abajo")).clicked() {
                 act = Some(ArrangeAct::Align(1, 1));
             }
         });
         let multi3 = self.selected_indices().len() >= 3;
         ui.horizontal(|ui| {
-            ui.label("Distribuir:");
-            if ui.add_enabled(multi3, egui::Button::new("↔ H")).on_hover_text("Espaciado horizontal uniforme").clicked() {
+            ui.label(tr(lang, "Distribuir:"));
+            if ui.add_enabled(multi3, egui::Button::new("↔ H")).on_hover_text(tr(lang, "Espaciado horizontal uniforme")).clicked() {
                 act = Some(ArrangeAct::Distribute(0));
             }
-            if ui.add_enabled(multi3, egui::Button::new("↕ V")).on_hover_text("Espaciado vertical uniforme").clicked() {
+            if ui.add_enabled(multi3, egui::Button::new("↕ V")).on_hover_text(tr(lang, "Espaciado vertical uniforme")).clicked() {
                 act = Some(ArrangeAct::Distribute(1));
             }
-            if ui.button("▦ Matriz…").on_hover_text("Duplicar en rejilla o círculo").clicked() {
+            if ui.button(tr(lang, "▦ Matriz…")).on_hover_text(tr(lang, "Duplicar en rejilla o círculo")).clicked() {
                 act = Some(ArrangeAct::OpenArray);
             }
         });
 
         ui.separator();
         ui.horizontal(|ui| {
-            if ui.button("⧉ Duplicar").clicked() {
+            if ui.button(tr(lang, "⧉ Duplicar")).clicked() {
                 do_dup = true;
             }
-            if ui.button("🗑 Eliminar").clicked() {
+            if ui.button(tr(lang, "🗑 Eliminar")).clicked() {
                 do_delete = true;
             }
         });
@@ -2607,19 +2640,20 @@ impl RustburnApp {
     }
 
     fn laser_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Láser (GRBL)");
+        let lang = self.lang;
+        ui.heading(tr(lang, "Láser (GRBL)"));
 
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.conn_kind, ConnKind::Usb, "USB");
-            ui.selectable_value(&mut self.conn_kind, ConnKind::Wifi, "WiFi");
-            if ui.small_button("⟳").on_hover_text("Refrescar puertos").clicked() {
+            ui.selectable_value(&mut self.conn_kind, ConnKind::Usb, tr(lang, "USB"));
+            ui.selectable_value(&mut self.conn_kind, ConnKind::Wifi, tr(lang, "WiFi"));
+            if ui.small_button("⟳").on_hover_text(tr(lang, "Refrescar puertos")).clicked() {
                 self.ports_cache = crate::device::list_serial_ports();
             }
         });
         match self.conn_kind {
             ConnKind::Usb => {
                 ui.horizontal(|ui| {
-                    ui.label("Puerto:");
+                    ui.label(tr(lang, "Puerto:"));
                     ui.text_edit_singleline(&mut self.port);
                 });
                 if !self.ports_cache.is_empty() {
@@ -2632,17 +2666,17 @@ impl RustburnApp {
                     });
                 }
                 ui.horizontal(|ui| {
-                    ui.label("Baudios:");
+                    ui.label(tr(lang, "Baudios:"));
                     ui.add(egui::DragValue::new(&mut self.doc.machine.baud).range(9600..=1000000));
                 });
             }
             ConnKind::Wifi => {
                 ui.horizontal(|ui| {
-                    ui.label("Host:");
+                    ui.label(tr(lang, "Host:"));
                     ui.text_edit_singleline(&mut self.host);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Puerto TCP:");
+                    ui.label(tr(lang, "Puerto TCP:"));
                     ui.add(egui::DragValue::new(&mut self.tcp_port).range(1..=65535));
                 });
             }
@@ -2650,10 +2684,10 @@ impl RustburnApp {
 
         ui.horizontal(|ui| {
             if self.device.connected {
-                if ui.button("Desconectar").clicked() {
+                if ui.button(tr(lang, "Desconectar")).clicked() {
                     self.device.disconnect();
                 }
-            } else if ui.button("🔌 Conectar").clicked() {
+            } else if ui.button(tr(lang, "🔌 Conectar")).clicked() {
                 let target = match self.conn_kind {
                     ConnKind::Usb => ConnTarget::Serial {
                         path: self.port.clone(),
@@ -2681,15 +2715,15 @@ impl RustburnApp {
         }
 
         ui.add_space(4.0);
-        ui.label("Mover (jog)");
+        ui.label(tr(lang, "Mover (jog)"));
         ui.horizontal(|ui| {
-            ui.label("Paso:");
+            ui.label(tr(lang, "Paso:"));
             for s in [0.1, 1.0, 10.0, 50.0] {
                 ui.selectable_value(&mut self.jog_step, s, format!("{s}"));
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Avance:");
+            ui.label(tr(lang, "Avance:"));
             ui.add(egui::DragValue::new(&mut self.jog_feed).range(10.0..=20000.0).suffix(" mm/min"));
         });
         let enabled = self.device.connected;
@@ -2703,7 +2737,7 @@ impl RustburnApp {
             if ui.add_enabled(enabled, egui::Button::new("← X-")).clicked() {
                 self.device.jog(-self.jog_step, 0.0, self.jog_feed);
             }
-            if ui.add_enabled(enabled, egui::Button::new("⌂ Home")).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(tr(lang, "⌂ Home"))).clicked() {
                 self.device.home();
             }
             if ui.add_enabled(enabled, egui::Button::new("→ X+")).clicked() {
@@ -2714,7 +2748,7 @@ impl RustburnApp {
             if ui.add_enabled(enabled, egui::Button::new("↓ Y-")).clicked() {
                 self.device.jog(0.0, -self.jog_step, self.jog_feed);
             }
-            if ui.add_enabled(enabled, egui::Button::new("⦿ Origen")).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(tr(lang, "⦿ Origen"))).clicked() {
                 self.device.set_zero();
             }
             ui.end_row();
@@ -2722,11 +2756,11 @@ impl RustburnApp {
 
         ui.add_space(6.0);
         ui.separator();
-        ui.label(egui::RichText::new("Salida del trabajo").strong());
-        ui.checkbox(&mut self.cut_selected, "Cortar solo gráficos seleccionados");
-        ui.checkbox(&mut self.use_job_origin, "Usar origen de la pieza (coords. relativas)");
+        ui.label(egui::RichText::new(tr(lang, "Salida del trabajo")).strong());
+        ui.checkbox(&mut self.cut_selected, tr(lang, "Cortar solo gráficos seleccionados"));
+        ui.checkbox(&mut self.use_job_origin, tr(lang, "Usar origen de la pieza (coords. relativas)"));
         ui.horizontal(|ui| {
-            ui.label("Origen del trabajo:");
+            ui.label(tr(lang, "Origen del trabajo:"));
             ui.add_enabled_ui(self.use_job_origin, |ui| {
                 egui::Grid::new("job_origin_grid").spacing([2.0, 2.0]).show(ui, |ui| {
                     for row in 0u8..3 {
@@ -2749,15 +2783,15 @@ impl RustburnApp {
         });
 
         ui.add_space(6.0);
-        ui.label("Encuadre (framing)");
+        ui.label(tr(lang, "Encuadre (framing)"));
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.frame_power).range(0.0..=100.0).prefix("P ").suffix(" %"));
             ui.add(egui::DragValue::new(&mut self.frame_speed).range(100.0..=20000.0).suffix(" mm/min"));
-            if ui.add_enabled(enabled, egui::Button::new("▭ Trazar")).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(tr(lang, "▭ Trazar"))).clicked() {
                 if let Some(lines) = crate::gcode::frame(&self.doc, self.frame_power, self.frame_speed) {
                     self.device.send_job(lines);
                 } else {
-                    self.status_msg = "No hay diseño para encuadrar".into();
+                    self.status_msg = tr(lang, "No hay diseño para encuadrar").into();
                 }
             }
         });
@@ -2766,17 +2800,17 @@ impl RustburnApp {
         ui.separator();
         ui.horizontal(|ui| {
             let can_send = enabled && !self.gcode.is_empty();
-            if ui.add_enabled(can_send, egui::Button::new("▶ Iniciar")).clicked() {
+            if ui.add_enabled(can_send, egui::Button::new(tr(lang, "▶ Iniciar"))).clicked() {
                 self.device.send_job(self.gcode.clone());
-                self.log(format!("Enviando trabajo: {} líneas", self.gcode.len()));
+                self.log(format!("{}: {} {}", tr(lang, "Enviando trabajo"), self.gcode.len(), tr(lang, "líneas")));
             }
-            if ui.add_enabled(enabled, egui::Button::new("⏸ Pausa")).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(tr(lang, "⏸ Pausa"))).clicked() {
                 self.device.feed_hold();
             }
-            if ui.add_enabled(enabled, egui::Button::new("⏵ Reanudar")).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(tr(lang, "⏵ Reanudar"))).clicked() {
                 self.device.resume();
             }
-            if ui.add_enabled(enabled, egui::Button::new("⏹ Parar")).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(tr(lang, "⏹ Parar"))).clicked() {
                 self.device.abort();
             }
         });
@@ -2796,9 +2830,10 @@ impl RustburnApp {
 // --- Console -----------------------------------------------------------------
 impl RustburnApp {
     fn console_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
         ui.horizontal(|ui| {
-            ui.label("Consola");
-            if ui.small_button("Limpiar").clicked() {
+            ui.label(tr(lang, "Consola"));
+            if ui.small_button(tr(lang, "Limpiar")).clicked() {
                 self.console.clear();
             }
         });
@@ -2815,9 +2850,9 @@ impl RustburnApp {
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.console_input)
                     .desired_width(ui.available_width() - 60.0)
-                    .hint_text("Comando GRBL (p.ej. $$, G0 X10)…"),
+                    .hint_text(tr(lang, "Comando GRBL (p.ej. $$, G0 X10)…")),
             );
-            let send = ui.button("Enviar").clicked()
+            let send = ui.button(tr(lang, "Enviar")).clicked()
                 || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             if send && !self.console_input.trim().is_empty() {
                 let cmd = self.console_input.trim().to_string();
@@ -2831,7 +2866,8 @@ impl RustburnApp {
 // --- Tools -------------------------------------------------------------------
 impl RustburnApp {
     fn tools_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Herramientas");
+        let lang = self.lang;
+        ui.heading(tr(lang, "Herramientas"));
         let tools = [
             (Tool::Select, "🖱 Seleccionar"),
             (Tool::Node, "✎ Nodos"),
@@ -2845,7 +2881,7 @@ impl RustburnApp {
         ];
         for (t, label) in tools {
             if ui
-                .selectable_label(self.tool == t, label)
+                .selectable_label(self.tool == t, tr(lang, label))
                 .clicked()
             {
                 self.tool = t;
@@ -2864,22 +2900,22 @@ impl RustburnApp {
             Tool::Polyline => {
                 ui.weak("Clic para añadir puntos.\nEnter = terminar\nEsc = cancelar\nC = cerrar");
                 if !self.poly_points.is_empty()
-                    && ui.button("✓ Terminar").clicked()
+                    && ui.button(tr(lang, "✓ Terminar")).clicked()
                 {
                     self.finish_polyline(false);
                 }
             }
             Tool::Text => {
-                ui.label("Texto:");
+                ui.label(tr(lang, "Texto:"));
                 ui.add(
                     egui::TextEdit::multiline(&mut self.text_content)
                         .desired_rows(2)
                         .desired_width(f32::INFINITY),
                 );
                 ui.horizontal(|ui| {
-                    ui.label("Fuente:");
+                    ui.label(tr(lang, "Fuente:"));
                     let shown = if self.text_font.is_empty() {
-                        "Automática".to_string()
+                        tr(lang, "Automática").to_string()
                     } else {
                         self.text_font.clone()
                     };
@@ -2888,7 +2924,7 @@ impl RustburnApp {
                         .width(190.0)
                         .show_ui(ui, |ui| {
                             egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                                ui.selectable_value(&mut self.text_font, String::new(), "Automática");
+                                ui.selectable_value(&mut self.text_font, String::new(), tr(lang, "Automática"));
                                 for i in 0..self.font_families.len() {
                                     let fam = self.font_families[i].clone();
                                     ui.selectable_value(&mut self.text_font, fam.clone(), fam);
@@ -2897,7 +2933,7 @@ impl RustburnApp {
                         });
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Altura:");
+                    ui.label(tr(lang, "Altura:"));
                     ui.add(
                         egui::DragValue::new(&mut self.text_height)
                             .range(1.0..=500.0)
@@ -2905,7 +2941,7 @@ impl RustburnApp {
                     );
                 });
                 ui.separator();
-                ui.checkbox(&mut self.num_series, "Numeración / texto variable (serie)");
+                ui.checkbox(&mut self.num_series, tr(lang, "Numeración / texto variable (serie)"));
                 if self.num_series {
                     ui.weak("Usa # como hueco del número (p.ej. 'Pieza ###').");
                     egui::Grid::new("num_series").num_columns(2).show(ui, |ui| {
@@ -2923,9 +2959,9 @@ impl RustburnApp {
                         ui.end_row();
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Disposición:");
-                        ui.selectable_value(&mut self.num_horizontal, false, "Vertical");
-                        ui.selectable_value(&mut self.num_horizontal, true, "Horizontal");
+                        ui.label(tr(lang, "Disposición:"));
+                        ui.selectable_value(&mut self.num_horizontal, false, tr(lang, "Vertical"));
+                        ui.selectable_value(&mut self.num_horizontal, true, tr(lang, "Horizontal"));
                     });
                     let last = self.num_start + self.num_step * (self.num_count.max(1) as i64 - 1);
                     ui.weak(format!(
@@ -2951,23 +2987,23 @@ impl RustburnApp {
         }
 
         ui.separator();
-        ui.heading("Operaciones");
-        ui.weak("Shift+clic: añadir operandos");
+        ui.heading(tr(lang, "Operaciones"));
+        ui.weak(tr(lang, "Shift+clic: añadir operandos"));
         if !self.multi.is_empty() {
             ui.weak(format!("{} operando(s) extra", self.multi.len()));
         }
         ui.horizontal_wrapped(|ui| {
-            if ui.button("∪ Unir").clicked() {
+            if ui.button(tr(lang, "∪ Unir")).clicked() {
                 self.boolean_selected(crate::geom_ops::BoolOp::Union);
             }
-            if ui.button("− Restar").clicked() {
+            if ui.button(tr(lang, "− Restar")).clicked() {
                 self.boolean_selected(crate::geom_ops::BoolOp::Difference);
             }
-            if ui.button("∩ Intersecar").clicked() {
+            if ui.button(tr(lang, "∩ Intersecar")).clicked() {
                 self.boolean_selected(crate::geom_ops::BoolOp::Intersect);
             }
-            if ui.button("⊕ Soldar")
-                .on_hover_text("Funde contornos solapados en uno (ideal para soldar letras de texto cursivo)")
+            if ui.button(tr(lang, "⊕ Soldar"))
+                .on_hover_text(tr(lang, "Funde contornos solapados en uno (ideal para soldar letras de texto cursivo)"))
                 .clicked()
             {
                 self.weld_selected();
@@ -2980,25 +3016,25 @@ impl RustburnApp {
                     .range(-50.0..=50.0)
                     .suffix(" mm"),
             );
-            if ui.button("⟳ Offset").clicked() {
+            if ui.button(tr(lang, "⟳ Offset")).clicked() {
                 self.offset_selected(self.offset_dist);
             }
         });
         ui.horizontal_wrapped(|ui| {
-            if ui.button("⊏ Cerrar trazado")
-                .on_hover_text("Cierra los trazados abiertos del objeto seleccionado")
+            if ui.button(tr(lang, "⊏ Cerrar trazado"))
+                .on_hover_text(tr(lang, "Cierra los trazados abiertos del objeto seleccionado"))
                 .clicked()
             {
                 self.close_paths_selected();
             }
-            if ui.button("✂ Recortar a la cama")
-                .on_hover_text("Elimina la geometría fuera del área de trabajo")
+            if ui.button(tr(lang, "✂ Recortar a la cama"))
+                .on_hover_text(tr(lang, "Elimina la geometría fuera del área de trabajo"))
                 .clicked()
             {
                 self.clip_to_bed();
             }
-            if ui.button("〰 Suavizar nodos")
-                .on_hover_text("Redondea las esquinas con curvas tipo bézier (spline Catmull-Rom) a través de los nodos")
+            if ui.button(tr(lang, "〰 Suavizar nodos"))
+                .on_hover_text(tr(lang, "Redondea las esquinas con curvas tipo bézier (spline Catmull-Rom) a través de los nodos"))
                 .clicked()
             {
                 self.smooth_selected();

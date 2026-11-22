@@ -172,6 +172,7 @@ pub fn run() {
             canvas_light: true,
             machine: Some(m),
             text_font: "DejaVu Sans".into(),
+            lang: crate::i18n::Lang::En,
         };
         let json = serde_json::to_string(&p).expect("serializar prefs");
         let back: crate::prefs::Prefs = serde_json::from_str(&json).expect("deserializar prefs");
@@ -606,6 +607,20 @@ pub fn run() {
         let smooth = crate::app::catmull_rom(&square, true, 8);
         assert!(smooth.len() > square.len() * 4, "el suavizado no densificó");
         println!("Suavizado de nodos: {} → {} puntos", square.len(), smooth.len());
+    }
+
+    // --- i18n: traducción de menús (Español/Inglés) --------------------------
+    {
+        use crate::i18n::{tr, Lang};
+        // En español, la clave se devuelve tal cual.
+        assert_eq!(tr(Lang::Es, "⚙ Generar G-code"), "⚙ Generar G-code");
+        // En inglés, las claves conocidas se traducen.
+        assert_eq!(tr(Lang::En, "⚙ Generar G-code"), "⚙ Generate G-code");
+        assert_eq!(tr(Lang::En, "Herramientas"), "Tools");
+        assert_eq!(tr(Lang::En, "Capas"), "Layers");
+        // Una cadena desconocida cae al español (sin pánico).
+        assert_eq!(tr(Lang::En, "cadena inexistente xyz"), "cadena inexistente xyz");
+        println!("i18n: traducción ES↔EN de menús OK");
     }
 
     println!("\n✓ Self-test completado sin errores.");
