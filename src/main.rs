@@ -23,14 +23,72 @@ mod shapes;
 mod text;
 mod trace;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set by the log watcher when the GL backend reports it cannot create a usable
+/// context (e.g. `GLXBadFBConfig` on a machine without working 3D acceleration).
+static GL_CONTEXT_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// A `log::Log` that forwards to env_logger but flags GL context-creation
+/// failures so we can fall back to software rendering.
+struct WatchLogger(env_logger::Logger);
+
+impl log::Log for WatchLogger {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        self.0.enabled(m)
+    }
+    fn log(&self, record: &log::Record) {
+        let msg = format!("{}", record.args());
+        if msg.contains("Failed to create context")
+            || msg.contains("BadFBConfig")
+            || msg.contains("GLXBadFBConfig")
+        {
+            GL_CONTEXT_FAILED.store(true, Ordering::SeqCst);
+        }
+        self.0.log(record);
+    }
+    fn flush(&self) {
+        self.0.flush()
+    }
+}
+
+fn init_logging() {
+    let logger = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,rustburn=info"),
+    )
+    .build();
+    let level = logger.filter();
+    if log::set_boxed_logger(Box::new(WatchLogger(logger))).is_ok() {
+        log::set_max_level(level);
+    }
+}
+
 fn main() -> eframe::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rustburn=info"))
-        .init();
+    init_logging();
 
     // Headless self-test: build a sample document and dump G-code stats, no GUI.
     if std::env::args().any(|a| a == "--selftest") {
         selftest::run();
         return Ok(());
+    }
+
+    // Internal: invisible GL probe child. Exits 0 if hardware GL is fine, non-zero
+    // if the context failed (parent then re-runs with software rendering).
+    if std::env::var_os("RUSTBURN_GL_PROBE").is_some() {
+        return run_gl_probe();
+    }
+
+    // Auto-detect broken 3D acceleration and fall back to software, unless the
+    // user has already forced a choice.
+    if std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none()
+        && std::env::var_os("RUSTBURN_NO_GL_FALLBACK").is_none()
+        && !hardware_gl_ok()
+    {
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+        log::warn!(
+            "Aceleración 3D no disponible; usando renderizado por software (llvmpipe). \
+             Define RUSTBURN_NO_GL_FALLBACK=1 para desactivar esta detección."
+        );
     }
 
     let native_options = eframe::NativeOptions {
@@ -46,4 +104,68 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| Ok(Box::new(app::RustburnApp::new(cc)))),
     )
+}
+
+/// Run this same binary as an invisible probe child with a watchdog. Returns
+/// true when hardware GL works, false when we should force software rendering.
+fn hardware_gl_ok() -> bool {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let Ok(exe) = std::env::current_exe() else {
+        return true; // can't probe → assume OK, don't break good machines
+    };
+    let child = Command::new(exe)
+        .env("RUSTBURN_GL_PROBE", "1")
+        .env("RUSTBURN_NO_GL_FALLBACK", "1") // never recurse
+        .spawn();
+    let Ok(mut child) = child else {
+        return true;
+    };
+
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if start.elapsed() > Duration::from_secs(6) {
+                    // Stuck creating/using the context → treat as broken.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return true,
+        }
+    }
+}
+
+/// The probe child: create an invisible window + GL context, close on the first
+/// frame, then exit 0 (GL fine) or non-zero (context-creation failure detected).
+fn run_gl_probe() -> eframe::Result<()> {
+    struct ProbeApp;
+    impl eframe::App for ProbeApp {
+        fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_visible(false)
+            .with_inner_size([64.0, 64.0]),
+        ..Default::default()
+    };
+    let res = eframe::run_native(
+        "rustburn-gl-probe",
+        options,
+        Box::new(|_cc| Ok(Box::new(ProbeApp))),
+    );
+
+    // Hard failure to create the context, or the watcher saw the GLX error.
+    if res.is_err() || GL_CONTEXT_FAILED.load(Ordering::SeqCst) {
+        std::process::exit(7);
+    }
+    std::process::exit(0);
 }
