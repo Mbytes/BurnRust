@@ -8,6 +8,12 @@ sin licencia: **software libre**.
 Interfaz inmediata con **egui/eframe**, lienzo propio, y toda la E/S del dispositivo
 en un hilo de fondo para que la UI nunca se bloquee.
 
+![Interfaz de rustburn](docs/screenshots/interfaz.png)
+
+Fondo claro opcional (toda la interfaz):
+
+![rustburn con fondo claro](docs/screenshots/fondo-claro.png)
+
 ---
 
 ## Características
