@@ -577,7 +577,20 @@ impl RustburnApp {
         self.snapshot();
         let layer = self.selected_layer().min(self.doc.layers.len().saturating_sub(1));
         let id = self.doc.alloc_id();
-        let obj = Object::new(id, name, layer, kind, Vec2::new(10.0, 10.0));
+        let mut obj = Object::new(id, name, layer, kind, Vec2::new(10.0, 10.0));
+        // Fit to the bed and centre it, so even a large import arrives visible and
+        // its resize handles are reachable on screen.
+        if let Some(bb) = obj.local_bbox() {
+            let (w, h) = (bb.width().max(1e-6), bb.height().max(1e-6));
+            let (bw, bh) = (self.doc.machine.bed_w_mm, self.doc.machine.bed_h_mm);
+            let fit = ((bw * 0.9 / w).min(bh * 0.9 / h)).min(1.0);
+            obj.scale = Vec2::new(fit, fit);
+            let (sw, sh) = (w * fit, h * fit);
+            obj.pos = Vec2::new(
+                (bw - sw) / 2.0 - bb.min.x * fit,
+                (bh - sh) / 2.0 - bb.min.y * fit,
+            );
+        }
         let idx = self.doc.add_object(obj);
         self.doc.selected = Some(idx);
     }
@@ -1935,6 +1948,29 @@ impl RustburnApp {
                             self.status_msg = "Imagen importada".into();
                         }
                         Err(e) => self.status_msg = format!("Error imagen: {e}"),
+                    }
+                }
+            }
+            if ui
+                .button("📄 Importar PDF")
+                .on_hover_text("Rasteriza la 1ª página (requiere poppler o ghostscript). Puedes vectorizarla después.")
+                .clicked()
+            {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("PDF", &["pdf"])
+                    .pick_file()
+                {
+                    self.status_msg = "Convirtiendo PDF…".into();
+                    match crate::import::load_pdf(&path, 200) {
+                        Ok(kind) => {
+                            let name = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "pdf".into());
+                            self.add_imported(kind, name);
+                            self.status_msg = "PDF importado (imagen)".into();
+                        }
+                        Err(e) => self.status_msg = format!("Error PDF: {e}"),
                     }
                 }
             }

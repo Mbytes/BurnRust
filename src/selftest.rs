@@ -497,6 +497,41 @@ pub fn run() {
         }
     }
 
+    // PDF import (rasterised via an external converter; skipped if none present).
+    {
+        use std::process::Command;
+        let dir = std::env::temp_dir();
+        let ps = dir.join("rustburn_selftest.ps");
+        let pdf = dir.join("rustburn_selftest.pdf");
+        let _ = std::fs::write(&ps, b"%!PS\n100 300 200 100 rectfill\nshowpage\n");
+        let made = Command::new("gs")
+            .args([
+                "-q",
+                "-dNOPAUSE",
+                "-dBATCH",
+                "-sDEVICE=pdfwrite",
+                &format!("-sOutputFile={}", pdf.display()),
+                &ps.to_string_lossy(),
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if made && pdf.exists() {
+            match crate::import::load_pdf(&pdf, 72) {
+                Ok(crate::model::ObjectKind::Image(im)) => {
+                    assert!(im.width_px > 0 && im.height_px > 0, "PDF sin píxeles");
+                    println!("Importar PDF: {}×{} px → imagen OK", im.width_px, im.height_px);
+                }
+                Ok(_) => panic!("PDF no devolvió una imagen"),
+                Err(e) => println!("Importar PDF: convertidor presente pero falló ({e})"),
+            }
+        } else {
+            println!("Importar PDF: sin convertidor (gs) en este equipo, omitido");
+        }
+        let _ = std::fs::remove_file(&ps);
+        let _ = std::fs::remove_file(&pdf);
+    }
+
     // Affine fit for print&cut registration: recover a known transform.
     {
         use crate::geometry::{fit_affine, Affine, Vec2};

@@ -32,6 +32,10 @@ Fondo claro opcional (toda la interfaz):
 ### Importación y vectorizado
 - **SVG** (trazos vectoriales, curvas aplanadas a tolerancia).
 - **Imágenes** PNG / JPG / **WebP** / BMP / GIF, convertidas a **escala de grises**.
+- **PDF** (rasteriza la 1ª página con poppler/ghostscript del sistema; luego se puede
+  grabar o **vectorizar** a contornos de corte).
+- Todo lo importado llega **ajustado y centrado en la cama** y es **reescalable**
+  (tiradores en las esquinas al seleccionar, o campos Ancho/Alto en el panel Objeto).
 - **Vectorizar bitmap** (trazado de imagen a contornos): marching squares + simplificación
   Douglas–Peucker, con umbral, suavizado e inversión.
 

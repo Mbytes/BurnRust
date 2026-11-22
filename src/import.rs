@@ -95,6 +95,71 @@ fn flush(cur: &mut Polyline, out: &mut Vec<Polyline>) {
     }
 }
 
+/// Render the first page of a PDF to a greyscale raster [`ImageData`] at `dpi`,
+/// using an external converter (poppler's `pdftoppm`/`pdftocairo` or Ghostscript
+/// `gs`). The result is an image object that can be scaled, engraved, or traced
+/// to vectors. No native PDF dependency is pulled into the binary.
+pub fn load_pdf(path: &Path, dpi: u32) -> Result<ObjectKind> {
+    use std::process::Command;
+
+    let dir = std::env::temp_dir();
+    let stem = format!("rustburn_pdf_{}", std::process::id());
+    let prefix = dir.join(&stem);
+    let out_png = dir.join(format!("{stem}.png"));
+    let _ = std::fs::remove_file(&out_png);
+
+    let r = dpi.max(30).to_string();
+    let pdf = path.to_string_lossy().to_string();
+    let pfx = prefix.to_string_lossy().to_string();
+    let out = out_png.to_string_lossy().to_string();
+
+    // (tool, args). poppler writes `<prefix>.png`; gs writes the exact file.
+    let attempts: [(&str, Vec<String>); 3] = [
+        (
+            "pdftoppm",
+            vec![
+                "-png".into(), "-r".into(), r.clone(), "-f".into(), "1".into(),
+                "-l".into(), "1".into(), "-singlefile".into(), pdf.clone(), pfx.clone(),
+            ],
+        ),
+        (
+            "pdftocairo",
+            vec![
+                "-png".into(), "-r".into(), r.clone(), "-f".into(), "1".into(),
+                "-l".into(), "1".into(), "-singlefile".into(), pdf.clone(), pfx.clone(),
+            ],
+        ),
+        (
+            "gs",
+            vec![
+                "-q".into(), "-dNOPAUSE".into(), "-dBATCH".into(),
+                "-sDEVICE=pnggray".into(), format!("-r{r}"),
+                "-dFirstPage=1".into(), "-dLastPage=1".into(),
+                format!("-sOutputFile={out}"), pdf.clone(),
+            ],
+        ),
+    ];
+
+    let mut last = String::from("ninguna herramienta disponible");
+    for (tool, args) in attempts {
+        match Command::new(tool).args(&args).output() {
+            Ok(o) if o.status.success() && out_png.exists() => {
+                let kind = load_image(&out_png)?;
+                let _ = std::fs::remove_file(&out_png);
+                return Ok(kind);
+            }
+            Ok(o) => {
+                last = format!("{tool}: {}", String::from_utf8_lossy(&o.stderr).trim());
+            }
+            Err(e) => last = format!("{tool}: {e}"),
+        }
+    }
+    let _ = std::fs::remove_file(&out_png);
+    anyhow::bail!(
+        "No se pudo convertir el PDF. Instala poppler-utils (pdftoppm) o ghostscript (gs). Detalle: {last}"
+    )
+}
+
 /// Load a raster image as a greyscale [`ImageData`], sized from its pixel dimensions.
 pub fn load_image(path: &Path) -> Result<ObjectKind> {
     let img = image::open(path).with_context(|| format!("abriendo imagen {}", path.display()))?;
