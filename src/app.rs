@@ -1720,6 +1720,15 @@ impl RustburnApp {
 
 impl eframe::App for RustburnApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Whole-app theme follows the light/dark canvas preference.
+        let want_light = self.canvas_light;
+        if ctx.style().visuals.dark_mode == want_light {
+            ctx.set_visuals(if want_light {
+                egui::Visuals::light()
+            } else {
+                egui::Visuals::dark()
+            });
+        }
         self.pump_device();
         self.handle_shortcuts(ctx);
         // Keep polling the worker for live status.
