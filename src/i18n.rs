@@ -131,6 +131,7 @@ fn en(es: &'static str) -> &'static str {
         "Ancho (mm)" => "Width (mm)",
         "Alto (mm)" => "Height (mm)",
         "Rotación" => "Rotation",
+        "Versión" => "Version",
         "Capa:" => "Layer:",
         "Ningún objeto seleccionado." => "No object selected.",
         "Ajustes de imagen" => "Image adjustments",

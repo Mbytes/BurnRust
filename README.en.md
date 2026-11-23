@@ -146,6 +146,12 @@ presets are only a starting point: **always verify** with tests.
 
 ---
 
+## Contributors
+
+- **Epi** — tester (`epi@tudela.com`)
+
+---
+
 ## License
 
 MIT OR Apache-2.0.

@@ -1493,6 +1493,7 @@ impl RustburnApp {
                 egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
                     ui.heading(tr(lang, "rustburn — control láser GRBL"));
                     ui.label(tr(lang, "Aplicación nativa para láseres de diodo (Elegoo Phecda y compatibles GRBL 1.1)."));
+                    ui.weak(format!("{} {}", tr(lang, "Versión"), env!("CARGO_PKG_VERSION")));
                     ui.add_space(6.0);
 
                     ui.strong(tr(lang, "Lienzo"));
@@ -2451,12 +2452,30 @@ impl RustburnApp {
                 }
                 ui.end_row();
                 ui.label(tr(lang, "Rotación"));
+                let old_rot = obj.rotation;
                 let r = ui.add(
                     egui::DragValue::new(&mut obj.rotation)
                         .speed(0.5)
                         .suffix("°"),
                 );
                 began |= r.drag_started() || r.gained_focus();
+                if r.changed() {
+                    // Rotate about the object's centre (spin in place) instead of
+                    // about its local origin, which would swing it off-position.
+                    if let Some(lb) = obj.local_bbox() {
+                        let lc = Vec2::new(
+                            (lb.min.x + lb.max.x) / 2.0,
+                            (lb.min.y + lb.max.y) / 2.0,
+                        );
+                        let wc_new = obj.matrix().apply(lc);
+                        let wc_old = crate::geometry::Affine::trs(
+                            obj.pos.x, obj.pos.y, old_rot, obj.scale.x, obj.scale.y,
+                        )
+                        .apply(lc);
+                        obj.pos.x += wc_old.x - wc_new.x;
+                        obj.pos.y += wc_old.y - wc_new.y;
+                    }
+                }
                 ui.end_row();
             });
 
@@ -4267,22 +4286,45 @@ impl RustburnApp {
                     }
                 }
                 ObjectKind::Image(img) => {
-                    let p0 = self.view.w2s(origin, m.apply(Vec2::new(0.0, 0.0)));
-                    let p1 = self
-                        .view
-                        .w2s(origin, m.apply(Vec2::new(img.width_mm, img.height_mm)));
-                    let r = Rect::from_two_pos(p0, p1);
+                    // The four corners of the image, transformed (rotation/scale)
+                    // and projected to screen. Drawn as a textured quad so the
+                    // image actually rotates instead of being stretched into an
+                    // axis-aligned rectangle.
+                    let corners = [
+                        self.view.w2s(origin, m.apply(Vec2::new(0.0, 0.0))),
+                        self.view.w2s(origin, m.apply(Vec2::new(img.width_mm, 0.0))),
+                        self.view
+                            .w2s(origin, m.apply(Vec2::new(img.width_mm, img.height_mm))),
+                        self.view.w2s(origin, m.apply(Vec2::new(0.0, img.height_mm))),
+                    ];
                     if let Some(tex) = self.textures.get(&obj.id) {
-                        painter.image(
-                            tex.id(),
-                            r,
-                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
+                        let uv = [
+                            Pos2::new(0.0, 0.0),
+                            Pos2::new(1.0, 0.0),
+                            Pos2::new(1.0, 1.0),
+                            Pos2::new(0.0, 1.0),
+                        ];
+                        let mut mesh = egui::Mesh::with_texture(tex.id());
+                        for (p, u) in corners.iter().zip(uv.iter()) {
+                            mesh.vertices.push(egui::epaint::Vertex {
+                                pos: *p,
+                                uv: *u,
+                                color: Color32::WHITE,
+                            });
+                        }
+                        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+                        painter.add(egui::Shape::mesh(mesh));
                     } else {
-                        painter.rect_filled(r, 0.0, Color32::from_gray(80));
+                        painter.add(egui::Shape::convex_polygon(
+                            corners.to_vec(),
+                            Color32::from_gray(80),
+                            Stroke::NONE,
+                        ));
                     }
-                    painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, col));
+                    painter.add(egui::Shape::closed_line(
+                        corners.to_vec(),
+                        Stroke::new(1.0_f32, col),
+                    ));
                 }
             }
 

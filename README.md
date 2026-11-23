@@ -147,6 +147,12 @@ Los presets de materiales son orientativos: **verifica siempre** con pruebas.
 
 ---
 
+## Colaboradores
+
+- **Epi** — tester (`epi@tudela.com`)
+
+---
+
 ## Licencia
 
 MIT OR Apache-2.0.
