@@ -3812,9 +3812,9 @@ impl RustburnApp {
                             start_angle,
                         });
                     }
-                    let a = rotation.rem_euclid(360.0);
-                    let near_unrot = a < 0.6 || a > 359.4;
-                    if decided.is_none() && near_unrot {
+                    // Corner scale handles work at any rotation (the handles
+                    // follow the object's rotated corners).
+                    if decided.is_none() {
                         if let Some(corners) = self.obj_world_corners(sel) {
                             for i in 0..4 {
                                 let cs = self.view.w2s(origin, corners[i].1);
@@ -3919,8 +3919,16 @@ impl RustburnApp {
                     let dx = local_corner.x - local_anchor.x;
                     let dy = local_corner.y - local_anchor.y;
                     if dx.abs() > 1e-6 && dy.abs() > 1e-6 {
-                        let mut sx = (pw.x - anchor_world.x) / dx;
-                        let mut sy = (pw.y - anchor_world.y) / dy;
+                        // Bring the pointer offset (from the fixed anchor corner)
+                        // into the object's un-rotated frame, so scaling works at
+                        // any rotation. R(-θ)·(pw - anchor).
+                        let (sin, cos) = o.rotation.to_radians().sin_cos();
+                        let wx = pw.x - anchor_world.x;
+                        let wy = pw.y - anchor_world.y;
+                        let vx = cos * wx + sin * wy;
+                        let vy = -sin * wx + cos * wy;
+                        let mut sx = vx / dx;
+                        let mut sy = vy / dy;
                         if sx.abs() < 0.01 {
                             sx = 0.01 * if sx < 0.0 { -1.0 } else { 1.0 };
                         }
@@ -3935,9 +3943,13 @@ impl RustburnApp {
                             sy = start_scale.y * f;
                         }
                         o.scale = Vec2::new(sx, sy);
+                        // Reposition so the anchor corner stays put in world:
+                        // pos = anchor - R(θ)·diag(sx,sy)·local_anchor.
+                        let ax = sx * local_anchor.x;
+                        let ay = sy * local_anchor.y;
                         o.pos = Vec2::new(
-                            anchor_world.x - sx * local_anchor.x,
-                            anchor_world.y - sy * local_anchor.y,
+                            anchor_world.x - (cos * ax - sin * ay),
+                            anchor_world.y - (sin * ax + cos * ay),
                         );
                     }
                 }
@@ -4357,23 +4369,20 @@ impl RustburnApp {
                         .w2s(origin, Vec2::new(cx, bb.min.y - 20.0 / self.view.zoom as f64));
                     painter.line_segment([top, knob], Stroke::new(1.0_f32, yellow));
                     painter.circle_filled(knob, 4.5, yellow);
-                    // Scale handles at the corners (only when effectively unrotated).
-                    let a_ang = obj.rotation.rem_euclid(360.0);
-                    if a_ang < 0.6 || a_ang > 359.4 {
-                        if let Some(corners) = self.obj_world_corners(i) {
-                            for (_l, wpt) in corners {
-                                let s = self.view.w2s(origin, wpt);
-                                painter.rect_filled(
-                                    Rect::from_center_size(s, egui::Vec2::splat(8.0)),
-                                    0.0,
-                                    Color32::WHITE,
-                                );
-                                painter.rect_stroke(
-                                    Rect::from_center_size(s, egui::Vec2::splat(8.0)),
-                                    0.0,
-                                    Stroke::new(1.0_f32, Color32::from_gray(40)),
-                                );
-                            }
+                    // Scale handles at the (possibly rotated) corners.
+                    if let Some(corners) = self.obj_world_corners(i) {
+                        for (_l, wpt) in corners {
+                            let s = self.view.w2s(origin, wpt);
+                            painter.rect_filled(
+                                Rect::from_center_size(s, egui::Vec2::splat(8.0)),
+                                0.0,
+                                Color32::WHITE,
+                            );
+                            painter.rect_stroke(
+                                Rect::from_center_size(s, egui::Vec2::splat(8.0)),
+                                0.0,
+                                Stroke::new(1.0_f32, Color32::from_gray(40)),
+                            );
                         }
                     }
                 }
