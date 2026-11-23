@@ -370,7 +370,7 @@ impl RustburnApp {
             snap_guides: Vec::new(),
             frame_power: 1.0,
             frame_speed: 3000.0,
-            console: vec!["rustburn listo. Conéctate a la Phecda para empezar.".into()],
+            console: vec!["BurnRust listo. Conéctate a la Phecda para empezar.".into()],
             console_input: String::new(),
             textures: HashMap::new(),
             project_path: None,
@@ -1491,7 +1491,7 @@ impl RustburnApp {
             .default_width(460.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-                    ui.heading(tr(lang, "rustburn — control láser GRBL"));
+                    ui.heading(tr(lang, "BurnRust — control láser GRBL"));
                     ui.label(tr(lang, "Aplicación nativa para láseres de diodo (Elegoo Phecda y compatibles GRBL 1.1)."));
                     ui.weak(format!("{} {}", tr(lang, "Versión"), env!("CARGO_PKG_VERSION")));
                     ui.add_space(6.0);
@@ -1922,7 +1922,7 @@ impl RustburnApp {
             }
             if ui.button(tr(lang, "📂 Abrir proyecto")).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Proyecto rustburn", &["rbp", "json"])
+                    .add_filter("Proyecto BurnRust", &["rbp", "json"])
                     .pick_file()
                 {
                     match crate::project::load(&path) {
@@ -1938,7 +1938,7 @@ impl RustburnApp {
             }
             if ui.button(tr(lang, "💾 Guardar proyecto")).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Proyecto rustburn", &["rbp"])
+                    .add_filter("Proyecto BurnRust", &["rbp"])
                     .set_file_name("proyecto.rbp")
                     .save_file()
                 {
@@ -3403,7 +3403,7 @@ impl RustburnApp {
             return;
         }
         let out = std::env::temp_dir().join(format!(
-            "rustburn_cam_{}.png",
+            "BurnRust_cam_{}.png",
             std::process::id()
         ));
         // -f v4l2 reads the webcam; -frames:v 1 grabs one frame; -y overwrites.

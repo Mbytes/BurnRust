@@ -103,7 +103,7 @@ pub fn load_pdf(path: &Path, dpi: u32) -> Result<ObjectKind> {
     use std::process::Command;
 
     let dir = std::env::temp_dir();
-    let stem = format!("rustburn_pdf_{}", std::process::id());
+    let stem = format!("BurnRust_pdf_{}", std::process::id());
     let prefix = dir.join(&stem);
     let out_png = dir.join(format!("{stem}.png"));
     let _ = std::fs::remove_file(&out_png);
@@ -168,7 +168,7 @@ pub fn load_pdf_vector(path: &Path) -> Result<ObjectKind> {
     use std::process::Command;
 
     let dir = std::env::temp_dir();
-    let stem = format!("rustburn_pdfv_{}", std::process::id());
+    let stem = format!("BurnRust_pdfv_{}", std::process::id());
     let out_svg = dir.join(format!("{stem}.svg"));
     let _ = std::fs::remove_file(&out_svg);
 

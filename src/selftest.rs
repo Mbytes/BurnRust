@@ -70,7 +70,7 @@ pub fn demo_document() -> Document {
 pub fn run() {
     let doc = demo_document();
     let job = crate::gcode::generate(&doc);
-    println!("=== rustburn self-test ===");
+    println!("=== BurnRust self-test ===");
     println!(
         "Documento: {} capas, {} objetos, cama {}x{} mm",
         doc.layers.len(),
@@ -481,7 +481,7 @@ pub fn run() {
             }
         }
         for ext in ["png", "webp"] {
-            let p = dir.join(format!("rustburn_selftest_img.{ext}"));
+            let p = dir.join(format!("BurnRust_selftest_img.{ext}"));
             img.save(&p).unwrap_or_else(|e| panic!("guardar {ext}: {e}"));
             let kind = crate::import::load_image(&p)
                 .unwrap_or_else(|e| panic!("load_image {ext}: {e}"));
@@ -502,8 +502,8 @@ pub fn run() {
     {
         use std::process::Command;
         let dir = std::env::temp_dir();
-        let ps = dir.join("rustburn_selftest.ps");
-        let pdf = dir.join("rustburn_selftest.pdf");
+        let ps = dir.join("BurnRust_selftest.ps");
+        let pdf = dir.join("BurnRust_selftest.pdf");
         let _ = std::fs::write(&ps, b"%!PS\n100 300 200 100 rectfill\nshowpage\n");
         let made = Command::new("gs")
             .args([

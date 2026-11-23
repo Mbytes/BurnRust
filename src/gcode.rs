@@ -90,7 +90,7 @@ pub fn generate_with(doc: &Document, opts: &GenOptions) -> GcodeJob {
         None => true,
     };
 
-    out.push("; rustburn G-code (GRBL laser)".into());
+    out.push("; BurnRust G-code (GRBL laser)".into());
     out.push(format!(
         "; cama {}x{} mm, Smax {}, modo {}",
         fmt(m.bed_w_mm),
@@ -389,7 +389,7 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 /// a filled square engraved at that setting.
 pub fn material_test(m: &MachineSettings, t: &MaterialTest) -> Vec<String> {
     let mut out = vec![
-        "; rustburn - test de material (columnas=potencia, filas=velocidad)".to_string(),
+        "; BurnRust - test de material (columnas=potencia, filas=velocidad)".to_string(),
         "G21".into(),
         "G90".into(),
         "M5".into(),

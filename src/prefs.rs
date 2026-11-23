@@ -25,12 +25,12 @@ pub struct Prefs {
     pub lang: crate::i18n::Lang,
 }
 
-/// `$HOME/.config/rustburn/prefs.json`.
+/// `$HOME/.config/BurnRust/prefs.json`.
 pub fn config_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let mut p = PathBuf::from(home);
     p.push(".config");
-    p.push("rustburn");
+    p.push("BurnRust");
     p.push("prefs.json");
     Some(p)
 }

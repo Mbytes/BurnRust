@@ -1,4 +1,4 @@
-# rustburn
+# BurnRust
 
 **Español** · [English](README.en.md)
 
@@ -10,11 +10,11 @@ sin licencia: **software libre**.
 Interfaz inmediata con **egui/eframe**, lienzo propio, y toda la E/S del dispositivo
 en un hilo de fondo para que la UI nunca se bloquee.
 
-![Interfaz de rustburn](docs/screenshots/interfaz.png)
+![Interfaz de BurnRust](docs/screenshots/interfaz.png)
 
 Fondo claro opcional (toda la interfaz):
 
-![rustburn con fondo claro](docs/screenshots/fondo-claro.png)
+![BurnRust con fondo claro](docs/screenshots/fondo-claro.png)
 
 ---
 
@@ -88,7 +88,7 @@ Fondo claro opcional (toda la interfaz):
 ### Comodidades
 - **Nuevo proyecto**, **Guardar/Abrir** proyecto (`.rbp`, JSON), **deshacer/rehacer**.
 - **Persistencia de preferencias** entre sesiones: última máquina, fondo (claro/oscuro) y
-  fuente de texto (`~/.config/rustburn/prefs.json`).
+  fuente de texto (`~/.config/BurnRust/prefs.json`).
 - **Renderizado por software automático** si la GPU no soporta OpenGL 3.x (p. ej. equipos
   antiguos con Intel GMA / OpenGL 2.1); se detecta al arrancar y se activa `llvmpipe` sin
   intervención.
@@ -114,13 +114,13 @@ cargo run -- --selftest
 
 ```bash
 bash packaging/build-appimage.sh
-./dist/rustburn-x86_64.AppImage
+./dist/BurnRust-x86_64.AppImage
 # o, si el sistema no tiene FUSE:
-./dist/rustburn-x86_64.AppImage --appimage-extract-and-run
+./dist/BurnRust-x86_64.AppImage --appimage-extract-and-run
 ```
 
-> **GPU antigua / pantalla negra**: rustburn detecta OpenGL < 3.0 y cae a renderizado por
-> software automáticamente. Para forzarlo tú mismo: `LIBGL_ALWAYS_SOFTWARE=1 ./rustburn...`.
+> **GPU antigua / pantalla negra**: BurnRust detecta OpenGL < 3.0 y cae a renderizado por
+> software automáticamente. Para forzarlo tú mismo: `LIBGL_ALWAYS_SOFTWARE=1 ./BurnRust...`.
 > Para desactivar la detección automática: `RUSTBURN_NO_GL_FALLBACK=1`.
 
 ---

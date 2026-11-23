@@ -1,4 +1,4 @@
-//! rustburn — native Rust laser design & control app (LightBurn-like) for GRBL diode
+//! BurnRust — native Rust laser design & control app (LightBurn-like) for GRBL diode
 //! lasers such as the Elegoo Phecda. Linux-native, no license required.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -56,7 +56,7 @@ impl log::Log for WatchLogger {
 
 fn init_logging() {
     let logger = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rustburn=info"),
+        env_logger::Env::default().default_filter_or("warn,burnrust=info"),
     )
     .build();
     let level = logger.filter();
@@ -97,12 +97,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1360.0, 860.0])
             .with_min_inner_size([900.0, 600.0])
-            .with_title("rustburn — control láser (GRBL)"),
+            .with_title("BurnRust — control láser (GRBL)"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "rustburn",
+        "BurnRust",
         native_options,
         Box::new(|cc| Ok(Box::new(app::RustburnApp::new(cc)))),
     )
@@ -160,7 +160,7 @@ fn run_gl_probe() -> eframe::Result<()> {
         ..Default::default()
     };
     let res = eframe::run_native(
-        "rustburn-gl-probe",
+        "BurnRust-gl-probe",
         options,
         Box::new(|cc| {
             // Inspect the real GL context: egui needs OpenGL 3.x. An old driver

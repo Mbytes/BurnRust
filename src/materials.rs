@@ -83,12 +83,12 @@ pub fn defaults() -> Vec<Material> {
     ]
 }
 
-/// `$HOME/.config/rustburn/materials.json`.
+/// `$HOME/.config/BurnRust/materials.json`.
 pub fn config_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let mut p = PathBuf::from(home);
     p.push(".config");
-    p.push("rustburn");
+    p.push("BurnRust");
     p.push("materials.json");
     Some(p)
 }

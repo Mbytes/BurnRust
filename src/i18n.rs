@@ -357,7 +357,7 @@ fn en(es: &'static str) -> &'static str {
         "Aún sin alineación calculada." => "No alignment computed yet.",
 
         // Help window
-        "rustburn — control láser GRBL" => "rustburn — GRBL laser control",
+        "BurnRust — control láser GRBL" => "BurnRust — GRBL laser control",
         "Aplicación nativa para láseres de diodo (Elegoo Phecda y compatibles GRBL 1.1)." =>
             "Native app for diode lasers (Elegoo Phecda and GRBL 1.1 compatibles).",
         "Lienzo" => "Canvas",

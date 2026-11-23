@@ -1,4 +1,4 @@
-# rustburn
+# BurnRust
 
 [Español](README.md) · **English**
 
@@ -10,11 +10,11 @@ of **LightBurn**, aimed at diode lasers running **GRBL 1.1** firmware such as th
 Immediate-mode UI with **egui/eframe**, a custom canvas, and all device I/O on a
 background thread so the UI never blocks.
 
-![rustburn interface](docs/screenshots/interfaz.png)
+![BurnRust interface](docs/screenshots/interfaz.png)
 
 Optional light background (whole interface):
 
-![rustburn with a light background](docs/screenshots/fondo-claro.png)
+![BurnRust with a light background](docs/screenshots/fondo-claro.png)
 
 ---
 
@@ -87,7 +87,7 @@ Optional light background (whole interface):
 ### Convenience
 - **New project**, **Save/Open** project (`.rbp`, JSON), **undo/redo**.
 - **Preference persistence** across sessions: last machine, background (light/dark) and text
-  font (`~/.config/rustburn/prefs.json`).
+  font (`~/.config/BurnRust/prefs.json`).
 - **Automatic software rendering** when the GPU does not support OpenGL 3.x (e.g. old Intel
   GMA / OpenGL 2.1 machines); detected at startup and `llvmpipe` is enabled with no action
   required.
@@ -113,13 +113,13 @@ cargo run -- --selftest
 
 ```bash
 bash packaging/build-appimage.sh
-./dist/rustburn-x86_64.AppImage
+./dist/BurnRust-x86_64.AppImage
 # or, if the system has no FUSE:
-./dist/rustburn-x86_64.AppImage --appimage-extract-and-run
+./dist/BurnRust-x86_64.AppImage --appimage-extract-and-run
 ```
 
-> **Old GPU / black screen**: rustburn detects OpenGL < 3.0 and falls back to software
-> rendering automatically. To force it yourself: `LIBGL_ALWAYS_SOFTWARE=1 ./rustburn...`.
+> **Old GPU / black screen**: BurnRust detects OpenGL < 3.0 and falls back to software
+> rendering automatically. To force it yourself: `LIBGL_ALWAYS_SOFTWARE=1 ./BurnRust...`.
 > To disable the automatic detection: `RUSTBURN_NO_GL_FALLBACK=1`.
 
 ---

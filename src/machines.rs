@@ -18,12 +18,12 @@ pub struct MachineProfile {
     pub settings: MachineSettings,
 }
 
-/// `$HOME/.config/rustburn/machines.json`.
+/// `$HOME/.config/BurnRust/machines.json`.
 pub fn config_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let mut p = PathBuf::from(home);
     p.push(".config");
-    p.push("rustburn");
+    p.push("BurnRust");
     p.push("machines.json");
     Some(p)
 }
