@@ -1,0 +1,130 @@
+name: Release
+
+# Compila BurnRust en Linux, Windows y macOS. Al publicar un tag vX.Y.Z
+# adjunta los binarios al release correspondiente; también se puede lanzar
+# a mano (workflow_dispatch), en cuyo caso deja los binarios como artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------- Linux
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libwayland-dev libssl-dev \
+            squashfs-tools wget
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Construir AppImage
+        run: bash packaging/build-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BurnRust-linux
+          path: dist/BurnRust-x86_64.AppImage
+      - name: Adjuntar al release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/BurnRust-x86_64.AppImage
+          fail_on_unmatched_files: true
+
+  # -------------------------------------------------------------- Windows
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compilar release
+        run: cargo build --release
+      - name: Empaquetar .zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path target/release/BurnRust.exe -DestinationPath dist/BurnRust-x86_64-windows.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BurnRust-windows
+          path: dist/BurnRust-x86_64-windows.zip
+      - name: Adjuntar al release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/BurnRust-x86_64-windows.zip
+          fail_on_unmatched_files: true
+
+  # ---------------------------------------------------------------- macOS
+  # Binario universal (Intel x86_64 + Apple Silicon arm64) dentro de un .app.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Compilar ambas arquitecturas
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+      - name: Crear binario universal y empaquetar .app
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          [ -n "$VER" ] || VER="0.0.0"
+          APP="BurnRust.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/BurnRust" \
+            target/x86_64-apple-darwin/release/BurnRust \
+            target/aarch64-apple-darwin/release/BurnRust
+          chmod +x "$APP/Contents/MacOS/BurnRust"
+          # Icono (best-effort): PNG -> .icns
+          if [ -f packaging/BurnRust.png ]; then
+            mkdir -p BurnRust.iconset
+            for s in 16 32 64 128 256 512; do
+              sips -z $s $s packaging/BurnRust.png --out "BurnRust.iconset/icon_${s}x${s}.png" >/dev/null 2>&1 || true
+            done
+            iconutil -c icns BurnRust.iconset -o "$APP/Contents/Resources/BurnRust.icns" 2>/dev/null || true
+          fi
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>BurnRust</string>
+            <key>CFBundleDisplayName</key><string>BurnRust</string>
+            <key>CFBundleExecutable</key><string>BurnRust</string>
+            <key>CFBundleIdentifier</key><string>net.mbytes.burnrust</string>
+            <key>CFBundleVersion</key><string>${VER}</string>
+            <key>CFBundleShortVersionString</key><string>${VER}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>BurnRust.icns</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSMinimumSystemVersion</key><string>10.13</string>
+          </dict>
+          </plist>
+          PLIST
+          mkdir -p dist
+          ditto -c -k --keepParent "$APP" dist/BurnRust-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BurnRust-macos
+          path: dist/BurnRust-macos-universal.zip
+      - name: Adjuntar al release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/BurnRust-macos-universal.zip
+          fail_on_unmatched_files: true
